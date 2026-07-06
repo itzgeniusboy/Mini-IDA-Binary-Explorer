@@ -1,0 +1,2 @@
+# Treat all jar files as binary to prevent CRLF line ending conversion corruption
+*.jar binary
