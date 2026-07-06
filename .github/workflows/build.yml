@@ -38,14 +38,14 @@ jobs:
       run: |
         echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125" >> $GITHUB_ENV
 
-    - name: Grant Execute Permission to Gradlew
-      run: chmod +x gradlew
+    - name: Force Gradle Wrapper Regeneration
+      run: gradle wrapper --gradle-version 8.7 --distribution-type bin
 
     - name: Run Tests
-      run: ./gradlew testDebugUnitTest
+      run: gradle testDebugUnitTest
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: gradle assembleDebug
 
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
