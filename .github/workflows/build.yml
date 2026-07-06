@@ -42,7 +42,7 @@ jobs:
       run: gradle wrapper --gradle-version 8.7 --distribution-type bin
 
     - name: Handle Missing Google Services
-      run: echo '{}' > app/google-services.json
+      run: echo '{"project_info":{"project_number":"123456789","project_id":"mock-id","storage_bucket":"mock.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:mock","android_client_info":{"package_name":"com.example.miniida"}},"api_key":[{"current_key":"mock-key"}],"services":{"appinvite_service":{"status":1}}}]}' > app/google-services.json
 
     - name: Build Debug APK
       run: gradle assembleDebug --no-daemon
