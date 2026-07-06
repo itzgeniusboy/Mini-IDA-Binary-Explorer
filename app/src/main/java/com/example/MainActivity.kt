@@ -52,7 +52,8 @@ class MainActivity : AppCompatActivity() {
     private val tabEmptyStates = mutableMapOf<Int, View>()
 
     // Selected file data cached
-    private var binaryBytes: ByteArray? = null
+    private var binaryBuffer: java.nio.ByteBuffer? = null
+    private lateinit var offsetsDbHelper: OffsetsDatabaseHelper
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -94,6 +95,9 @@ class MainActivity : AppCompatActivity() {
             filePickerLauncher.launch("*/*")
         }
 
+        // Initialize offsets database helper
+        offsetsDbHelper = OffsetsDatabaseHelper(this)
+
         setupViewPager()
     }
 
@@ -132,17 +136,6 @@ class MainActivity : AppCompatActivity() {
         val displayName = getUriDisplayName(uri)
         tvFilePath.text = displayName
 
-        // Start Foreground Service for parsing feedback
-        val serviceIntent = Intent(this, BinaryParsingService::class.java).apply {
-            action = BinaryParsingService.ACTION_START_PARSING
-            putExtra(BinaryParsingService.EXTRA_FILE_PATH, displayName)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
-
         // Show loading spinner on active tabs
         for (i in 0..2) {
             tabProgressBars[i]?.visibility = View.VISIBLE
@@ -151,16 +144,21 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                contentResolver.openInputStream(uri)?.use { inputStream ->
-                    val bytes = inputStream.readBytes()
-                    binaryBytes = bytes
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    val fileChannel = java.io.FileInputStream(pfd.fileDescriptor).channel
+                    val size = fileChannel.size()
+                    val buffer = fileChannel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, size)
+                    binaryBuffer = buffer
 
-                    val parser = ElfParser(bytes)
+                    val parser = ElfParser(buffer)
                     val header = parser.parseHeader()
 
                     val strings = parser.extractStrings()
                     val functions = parser.parseSymbols()
                     val hexDump = parser.getHexDump()
+
+                    // Populate database with the parsed symbols for this file
+                    offsetsDbHelper.insertOffsetsBulk(displayName, functions, header.classType)
 
                     withContext(Dispatchers.Main) {
                         statusBadge.text = "PARSED"
@@ -211,8 +209,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateTabPlaceholderState(position: Int) {
-        val bytes = binaryBytes
-        if (bytes == null) {
+        val buffer = binaryBuffer
+        if (buffer == null) {
             tabEmptyStates[position]?.visibility = View.VISIBLE
             tabProgressBars[position]?.visibility = View.GONE
             tabRecyclerViews[position]?.visibility = View.GONE

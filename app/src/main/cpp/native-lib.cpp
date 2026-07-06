@@ -26,54 +26,38 @@ struct ParsedSymbol {
     int index;
 };
 
-// Demangles basic mangled names if starts with _Z
+#include <cxxabi.h>
+
+// Proper standard Itanium demangler using compiler runtime abi::__cxa_demangle
 std::string simple_demangle(const std::string& mangled) {
-    if (mangled.rfind("_Z", 0) != 0) {
-        return mangled;
-    }
-    // Very simple demangle parsing for basic presentation fallback
-    std::string working = mangled.substr(2);
-    if (working.empty()) return mangled;
-    
-    if (working[0] == 'N') {
-        working = working.substr(1);
-        std::vector<std::string> parts;
-        size_t idx = 0;
-        while (idx < working.size() && isdigit(working[idx])) {
-            size_t num_len = 0;
-            while (idx + num_len < working.size() && isdigit(working[idx + num_len])) {
-                num_len++;
-            }
-            int len = std::stoi(working.substr(idx, num_len));
-            idx += num_len;
-            if (idx + len <= working.size()) {
-                parts.push_back(working.substr(idx, len));
-                idx += len;
-            } else {
-                break;
-            }
-        }
-        if (!parts.empty()) {
-            std::string demangled;
-            for (size_t i = 0; i < parts.size(); ++i) {
-                if (i > 0) demangled += "::";
-                demangled += parts[i];
-            }
-            return demangled + "()";
-        }
-    } else {
-        size_t num_len = 0;
-        while (num_len < working.size() && isdigit(working[num_len])) {
-            num_len++;
-        }
-        if (num_len > 0) {
-            int len = std::stoi(working.substr(0, num_len));
-            if (num_len + len <= working.size()) {
-                return working.substr(num_len, len) + "()";
-            }
-        }
+    int status = 0;
+    char *demangled = abi::__cxa_demangle(mangled.c_str(), nullptr, nullptr, &status);
+    if (status == 0 && demangled != nullptr) {
+        std::string result(demangled);
+        free(demangled);
+        return result;
     }
     return mangled;
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_ElfParser_demangleNative(JNIEnv *env, jobject thiz, jstring mangled) {
+    if (!mangled) return nullptr;
+    const char *mangled_str = env->GetStringUTFChars(mangled, nullptr);
+    if (!mangled_str) return mangled;
+
+    int status = 0;
+    char *demangled = abi::__cxa_demangle(mangled_str, nullptr, nullptr, &status);
+    env->ReleaseStringUTFChars(mangled, mangled_str);
+
+    if (status == 0 && demangled != nullptr) {
+        jstring result = env->NewStringUTF(demangled);
+        free(demangled);
+        return result;
+    } else {
+        return mangled;
+    }
 }
 
 extern "C"

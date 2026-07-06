@@ -9,13 +9,14 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
     companion object {
         const val DATABASE_NAME = "offsets.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
 
         const val TABLE_OFFSETS = "offsets"
         const val COLUMN_ID = "id"
         const val COLUMN_OFFSET_HEX = "offset_hex"
         const val COLUMN_SYMBOL_NAME = "symbol_name"
         const val COLUMN_ARCH_TYPE = "arch_type" // "32" or "64"
+        const val COLUMN_FILE_IDENTIFIER = "file_identifier" // path/name of file
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -24,13 +25,15 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
                 $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COLUMN_OFFSET_HEX TEXT,
                 $COLUMN_SYMBOL_NAME TEXT,
-                $COLUMN_ARCH_TYPE TEXT
+                $COLUMN_ARCH_TYPE TEXT,
+                $COLUMN_FILE_IDENTIFIER TEXT
             )
         """.trimIndent()
         db.execSQL(createTableQuery)
 
         db.execSQL("CREATE INDEX idx_offset_hex ON $TABLE_OFFSETS ($COLUMN_OFFSET_HEX)")
         db.execSQL("CREATE INDEX idx_symbol_name ON $TABLE_OFFSETS ($COLUMN_SYMBOL_NAME)")
+        db.execSQL("CREATE INDEX idx_file_identifier ON $TABLE_OFFSETS ($COLUMN_FILE_IDENTIFIER)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -38,11 +41,14 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         onCreate(db)
     }
 
-    fun insertOffsetsBulk(functions: List<ElfParser.ElfFunction>, archType: String) {
+    fun insertOffsetsBulk(fileIdentifier: String, functions: List<ElfParser.ElfFunction>, archType: String) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            val query = "INSERT INTO $TABLE_OFFSETS ($COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE) VALUES (?, ?, ?)"
+            // First clear any previous entries for this exact file identifier
+            db.delete(TABLE_OFFSETS, "$COLUMN_FILE_IDENTIFIER = ?", arrayOf(fileIdentifier))
+
+            val query = "INSERT INTO $TABLE_OFFSETS ($COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_FILE_IDENTIFIER) VALUES (?, ?, ?, ?)"
             val statement = db.compileStatement(query)
             
             for (func in functions) {
@@ -50,6 +56,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
                 statement.bindString(1, func.address)
                 statement.bindString(2, func.name)
                 statement.bindString(3, archType)
+                statement.bindString(4, fileIdentifier)
                 statement.executeInsert()
             }
             db.setTransactionSuccessful()
@@ -58,25 +65,45 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         }
     }
 
-    fun searchOffsetsPaginated(searchQuery: String?, limit: Int, offset: Int): List<ElfParser.ElfFunction> {
+    fun searchOffsetsPaginated(searchQuery: String?, fileIdentifier: String?, limit: Int, offset: Int): List<ElfParser.ElfFunction> {
         val db = readableDatabase
         val list = mutableListOf<ElfParser.ElfFunction>()
         
-        val cursor: Cursor = if (searchQuery.isNullOrBlank()) {
-            val selectQuery = """
-                SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_ID 
-                FROM $TABLE_OFFSETS 
-                LIMIT ? OFFSET ?
-            """.trimIndent()
-            db.rawQuery(selectQuery, arrayOf(limit.toString(), offset.toString()))
+        val cursor: Cursor = if (fileIdentifier.isNullOrBlank()) {
+            if (searchQuery.isNullOrBlank()) {
+                val selectQuery = """
+                    SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_ID 
+                    FROM $TABLE_OFFSETS 
+                    LIMIT ? OFFSET ?
+                """.trimIndent()
+                db.rawQuery(selectQuery, arrayOf(limit.toString(), offset.toString()))
+            } else {
+                val selectQuery = """
+                    SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_ID 
+                    FROM $TABLE_OFFSETS 
+                    WHERE $COLUMN_SYMBOL_NAME LIKE ? 
+                    LIMIT ? OFFSET ?
+                """.trimIndent()
+                db.rawQuery(selectQuery, arrayOf("%$searchQuery%", limit.toString(), offset.toString()))
+            }
         } else {
-            val selectQuery = """
-                SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_ID 
-                FROM $TABLE_OFFSETS 
-                WHERE $COLUMN_SYMBOL_NAME LIKE ? 
-                LIMIT ? OFFSET ?
-            """.trimIndent()
-            db.rawQuery(selectQuery, arrayOf("%$searchQuery%", limit.toString(), offset.toString()))
+            if (searchQuery.isNullOrBlank()) {
+                val selectQuery = """
+                    SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_ID 
+                    FROM $TABLE_OFFSETS 
+                    WHERE $COLUMN_FILE_IDENTIFIER = ?
+                    LIMIT ? OFFSET ?
+                """.trimIndent()
+                db.rawQuery(selectQuery, arrayOf(fileIdentifier, limit.toString(), offset.toString()))
+            } else {
+                val selectQuery = """
+                    SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_ID 
+                    FROM $TABLE_OFFSETS 
+                    WHERE $COLUMN_FILE_IDENTIFIER = ? AND $COLUMN_SYMBOL_NAME LIKE ? 
+                    LIMIT ? OFFSET ?
+                """.trimIndent()
+                db.rawQuery(selectQuery, arrayOf(fileIdentifier, "%$searchQuery%", limit.toString(), offset.toString()))
+            }
         }
 
         cursor.use {

@@ -1,10 +1,12 @@
 package com.example
 
-import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-class ElfParser(private val bytes: ByteArray) {
+class ElfParser(private val buffer: ByteBuffer) {
+
+    // Secondary constructor for backwards compatibility
+    constructor(bytes: ByteArray) : this(ByteBuffer.wrap(bytes))
 
     data class ElfHeader(
         val isElf: Boolean,
@@ -37,28 +39,45 @@ class ElfParser(private val bytes: ByteArray) {
         val ascii: String
     )
 
+    companion object {
+        init {
+            try {
+                System.loadLibrary("native-lib")
+            } catch (e: UnsatisfiedLinkError) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private external fun demangleNative(mangled: String): String
+
     fun parseHeader(): ElfHeader {
-        if (bytes.size < 16) {
+        val size = buffer.capacity()
+        if (size < 16) {
             return ElfHeader(false, false, false, "Unknown", "0x0", "Unknown", "Unknown")
         }
 
-        val isElf = bytes[0] == 0x7F.toByte() &&
-                    bytes[1] == 'E'.code.toByte() &&
-                    bytes[2] == 'L'.code.toByte() &&
-                    bytes[3] == 'F'.code.toByte()
+        val isElf = buffer.get(0) == 0x7F.toByte() &&
+                    buffer.get(1) == 'E'.code.toByte() &&
+                    buffer.get(2) == 'L'.code.toByte() &&
+                    buffer.get(3) == 'F'.code.toByte()
 
         if (!isElf) {
             return ElfHeader(false, false, false, "Unknown", "0x0", "Unknown", "Unknown")
         }
 
-        val is64Bit = bytes[4] == 2.toByte()
-        val isLittleEndian = bytes[5] == 1.toByte()
+        val is64Bit = buffer.get(4) == 2.toByte()
+        val isLittleEndian = buffer.get(5) == 1.toByte()
 
-        val buffer = ByteBuffer.wrap(bytes)
-        buffer.order(if (isLittleEndian) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
+        val localBuffer = buffer.duplicate()
+        localBuffer.order(if (isLittleEndian) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
 
         // Machine type is at offset 18
-        val machineVal = if (bytes.size >= 20) buffer.getShort(18).toInt() else 0
+        val machineVal = if (size >= 20) {
+            safeGetShort(localBuffer, 18)?.toInt() ?: 0
+        } else {
+            0
+        }
         val machine = when (machineVal) {
             3 -> "Intel 80386 (x86)"
             40 -> "ARM 32-bit"
@@ -70,13 +89,13 @@ class ElfParser(private val bytes: ByteArray) {
         // Entry point address: offset 24 for ELF64, offset 24 for ELF32
         var entryPoint = "0x0"
         if (is64Bit) {
-            if (bytes.size >= 32) {
-                val entryVal = buffer.getLong(24)
+            if (size >= 32) {
+                val entryVal = safeGetLong(localBuffer, 24) ?: 0L
                 entryPoint = "0x" + java.lang.Long.toHexString(entryVal).uppercase()
             }
         } else {
-            if (bytes.size >= 28) {
-                val entryVal = buffer.getInt(24).toLong() and 0xFFFFFFFFL
+            if (size >= 28) {
+                val entryVal = (safeGetInt(localBuffer, 24) ?: 0).toLong() and 0xFFFFFFFFL
                 entryPoint = "0x" + java.lang.Long.toHexString(entryVal).uppercase()
             }
         }
@@ -93,14 +112,16 @@ class ElfParser(private val bytes: ByteArray) {
     }
 
     /**
-     * Extracts printable ASCII strings of length >= 4
+     * Extracts printable ASCII strings of length >= 4 with a max limit of 50,000 strings
      */
-    fun extractStrings(): List<ElfString> {
+    fun extractStrings(maxLimit: Int = 50000): List<ElfString> {
         val stringsList = mutableListOf<ElfString>()
         var start = -1
+        val size = buffer.capacity()
+        var totalCount = 0
 
-        for (i in bytes.indices) {
-            val b = bytes[i].toInt() and 0xFF
+        for (i in 0 until size) {
+            val b = buffer.get(i).toInt() and 0xFF
             val isPrintable = b in 32..126
 
             if (isPrintable) {
@@ -111,9 +132,16 @@ class ElfParser(private val bytes: ByteArray) {
                 if (start != -1) {
                     val length = i - start
                     if (length >= 4) {
-                        val str = String(bytes, start, length, Charsets.US_ASCII)
-                        val offsetStr = "0x" + java.lang.Integer.toHexString(start).uppercase()
-                        stringsList.add(ElfString(offsetStr, str, length))
+                        totalCount++
+                        if (stringsList.size < maxLimit) {
+                            val bytesArray = ByteArray(length)
+                            val dup = buffer.duplicate()
+                            dup.position(start)
+                            dup.get(bytesArray)
+                            val str = String(bytesArray, Charsets.US_ASCII)
+                            val offsetStr = "0x" + java.lang.Integer.toHexString(start).uppercase()
+                            stringsList.add(ElfString(offsetStr, str, length))
+                        }
                     }
                     start = -1
                 }
@@ -122,12 +150,29 @@ class ElfParser(private val bytes: ByteArray) {
 
         // Handle string at the very end
         if (start != -1) {
-            val length = bytes.size - start
+            val length = size - start
             if (length >= 4) {
-                val str = String(bytes, start, length, Charsets.US_ASCII)
-                val offsetStr = "0x" + java.lang.Integer.toHexString(start).uppercase()
-                stringsList.add(ElfString(offsetStr, str, length))
+                totalCount++
+                if (stringsList.size < maxLimit) {
+                    val bytesArray = ByteArray(length)
+                    val dup = buffer.duplicate()
+                    dup.position(start)
+                    dup.get(bytesArray)
+                    val str = String(bytesArray, Charsets.US_ASCII)
+                    val offsetStr = "0x" + java.lang.Integer.toHexString(start).uppercase()
+                    stringsList.add(ElfString(offsetStr, str, length))
+                }
             }
+        }
+
+        if (totalCount > maxLimit) {
+            stringsList.add(
+                ElfString(
+                    offset = "TRUNCATED",
+                    value = "Showing first $maxLimit of $totalCount strings found.",
+                    length = totalCount
+                )
+            )
         }
 
         return stringsList
@@ -144,14 +189,30 @@ class ElfParser(private val bytes: ByteArray) {
         try {
             val is64Bit = header.is64Bit
             val isLittleEndian = header.isLittleEndian
-            val buffer = ByteBuffer.wrap(bytes)
-            buffer.order(if (isLittleEndian) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
+            val localBuffer = buffer.duplicate()
+            localBuffer.order(if (isLittleEndian) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
 
             // Section headers info
-            val shoff = if (is64Bit) buffer.getLong(40) else buffer.getInt(32).toLong() and 0xFFFFFFFFL
-            val shentsize = if (is64Bit) buffer.getShort(58).toInt() else buffer.getShort(46).toInt()
-            val shnum = if (is64Bit) buffer.getShort(60).toInt() else buffer.getShort(48).toInt()
-            val shstrndx = if (is64Bit) buffer.getShort(62).toInt() else buffer.getShort(50).toInt()
+            val shoff = if (is64Bit) {
+                safeGetLong(localBuffer, 40) ?: 0L
+            } else {
+                (safeGetInt(localBuffer, 32) ?: 0).toLong() and 0xFFFFFFFFL
+            }
+            val shentsize = if (is64Bit) {
+                (safeGetShort(localBuffer, 58) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 46) ?: 0).toInt()
+            }
+            val shnum = if (is64Bit) {
+                (safeGetShort(localBuffer, 60) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 48) ?: 0).toInt()
+            }
+            val shstrndx = if (is64Bit) {
+                (safeGetShort(localBuffer, 62) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 50) ?: 0).toInt()
+            }
 
             var symtabOffset = 0L
             var symtabSize = 0L
@@ -168,12 +229,24 @@ class ElfParser(private val bytes: ByteArray) {
             // Read section headers
             for (i in 0 until shnum) {
                 val secOffset = shoff + i * shentsize
-                if (secOffset + shentsize > bytes.size) break
+                if (secOffset + shentsize > localBuffer.capacity()) break
 
-                val sh_type = buffer.getInt((secOffset + (if (is64Bit) 4 else 4)).toInt())
-                val sh_offset = if (is64Bit) buffer.getLong((secOffset + 24).toInt()) else buffer.getInt((secOffset + 16).toInt()).toLong() and 0xFFFFFFFFL
-                val sh_size = if (is64Bit) buffer.getLong((secOffset + 32).toInt()) else buffer.getInt((secOffset + 20).toInt()).toLong() and 0xFFFFFFFFL
-                val sh_entsize = if (is64Bit) buffer.getLong((secOffset + 56).toInt()) else buffer.getInt((secOffset + 36).toInt()).toLong() and 0xFFFFFFFFL
+                val sh_type = safeGetInt(localBuffer, (secOffset + 4).toInt()) ?: continue
+                val sh_offset = if (is64Bit) {
+                    safeGetLong(localBuffer, (secOffset + 24).toInt()) ?: continue
+                } else {
+                    (safeGetInt(localBuffer, (secOffset + 16).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                }
+                val sh_size = if (is64Bit) {
+                    safeGetLong(localBuffer, (secOffset + 32).toInt()) ?: continue
+                } else {
+                    (safeGetInt(localBuffer, (secOffset + 20).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                }
+                val sh_entsize = if (is64Bit) {
+                    safeGetLong(localBuffer, (secOffset + 56).toInt()) ?: continue
+                } else {
+                    (safeGetInt(localBuffer, (secOffset + 36).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                }
 
                 when (sh_type) {
                     2 -> { // SHT_SYMTAB
@@ -181,7 +254,7 @@ class ElfParser(private val bytes: ByteArray) {
                         symtabSize = sh_size
                         symtabEntSize = sh_entsize
                     }
-                    3 -> { // SHT_STRTAB (But wait, we need to match it with symtab's link. For simple heuristics, if shstrndx is not this, it's string tab)
+                    3 -> { // SHT_STRTAB
                         if (i != shstrndx) {
                             strtabOffset = sh_offset
                             strtabSize = sh_size
@@ -195,15 +268,21 @@ class ElfParser(private val bytes: ByteArray) {
                 }
             }
 
-            // Fallback for dynstr if we found dynsym: usually dynstr immediately follows or precedes dynsym,
-            // or we look for SHT_STRTAB sections.
-            // Let's search again to find string table link for dynamic symbols
+            // Find matching dynstr
             for (i in 0 until shnum) {
                 val secOffset = shoff + i * shentsize
-                if (secOffset + shentsize > bytes.size) break
-                val sh_type = buffer.getInt((secOffset + 4).toInt())
-                val sh_offset = if (is64Bit) buffer.getLong((secOffset + 24).toInt()) else buffer.getInt((secOffset + 16).toInt()).toLong() and 0xFFFFFFFFL
-                val sh_size = if (is64Bit) buffer.getLong((secOffset + 32).toInt()) else buffer.getInt((secOffset + 20).toInt()).toLong() and 0xFFFFFFFFL
+                if (secOffset + shentsize > localBuffer.capacity()) break
+                val sh_type = safeGetInt(localBuffer, (secOffset + 4).toInt()) ?: continue
+                val sh_offset = if (is64Bit) {
+                    safeGetLong(localBuffer, (secOffset + 24).toInt()) ?: continue
+                } else {
+                    (safeGetInt(localBuffer, (secOffset + 16).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                }
+                val sh_size = if (is64Bit) {
+                    safeGetLong(localBuffer, (secOffset + 32).toInt()) ?: continue
+                } else {
+                    (safeGetInt(localBuffer, (secOffset + 20).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                }
                 if (sh_type == 3 && i != shstrndx && sh_offset != strtabOffset) {
                     dynstrOffset = sh_offset
                     dynstrSize = sh_size
@@ -221,67 +300,79 @@ class ElfParser(private val bytes: ByteArray) {
                 val count = (targetSymSize / targetSymEntSize).toInt()
                 for (i in 0 until count) {
                     val entryOffset = targetSymOffset + i * targetSymEntSize
-                    if (entryOffset + targetSymEntSize > bytes.size) break
+                    if (entryOffset + targetSymEntSize > localBuffer.capacity()) break
 
-                    // Symbol table entry fields
-                    val st_name = buffer.getInt(entryOffset.toInt())
-                    val st_info = bytes[(entryOffset + (if (is64Bit) 4 else 12)).toInt()].toInt()
-                    val st_other = bytes[(entryOffset + (if (is64Bit) 5 else 13)).toInt()].toInt()
-                    
-                    val st_value = if (is64Bit) {
-                        buffer.getLong((entryOffset + 8).toInt())
-                    } else {
-                        buffer.getInt((entryOffset + 4).toInt()).toLong() and 0xFFFFFFFFL
-                    }
-                    
-                    val st_size = if (is64Bit) {
-                        buffer.getLong((entryOffset + 16).toInt())
-                    } else {
-                        buffer.getInt((entryOffset + 8).toInt()).toLong() and 0xFFFFFFFFL
-                    }
+                    try {
+                        // Symbol table entry fields with strict bounds checks
+                        val st_name = safeGetInt(localBuffer, entryOffset.toInt()) ?: continue
+                        val infoOffset = entryOffset + (if (is64Bit) 4 else 12)
+                        val st_info = (safeGetByte(localBuffer, infoOffset.toInt()) ?: continue).toInt()
+                        
+                        val otherOffset = entryOffset + (if (is64Bit) 5 else 13)
+                        val st_other = (safeGetByte(localBuffer, otherOffset.toInt()) ?: continue).toInt()
+                        
+                        val st_value = if (is64Bit) {
+                            safeGetLong(localBuffer, (entryOffset + 8).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (entryOffset + 4).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+                        
+                        val st_size = if (is64Bit) {
+                            safeGetLong(localBuffer, (entryOffset + 16).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (entryOffset + 8).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
 
-                    val type = st_info and 0x0F
-                    val bind = (st_info shr 4) and 0x0F
+                        val type = st_info and 0x0F
+                        val bind = (st_info shr 4) and 0x0F
 
-                    // Only keep FUNC (type 2) or OBJECT (type 1) or SECTION (type 3)
-                    if (type == 2 || type == 1) {
-                        // Resolve name from string table
-                        var name = ""
-                        val nameIndex = targetStrOffset + st_name
-                        if (targetStrOffset != 0L && nameIndex < bytes.size) {
-                            val nameLen = bytes.indexOfNull(nameIndex.toInt(), (targetStrOffset + targetStrSize).toInt())
-                            if (nameLen > 0) {
-                                name = String(bytes, nameIndex.toInt(), nameLen, Charsets.UTF_8)
+                        // Only keep FUNC (type 2) or OBJECT (type 1)
+                        if (type == 2 || type == 1) {
+                            // Resolve name from string table
+                            var name = ""
+                            val nameIndex = targetStrOffset + st_name
+                            if (targetStrOffset != 0L && nameIndex < localBuffer.capacity()) {
+                                val nameLen = localBuffer.indexOfNull(nameIndex.toInt(), (targetStrOffset + targetStrSize).toInt())
+                                if (nameLen > 0 && nameIndex + nameLen <= localBuffer.capacity()) {
+                                    val nameBytes = ByteArray(nameLen)
+                                    val nameDup = localBuffer.duplicate()
+                                    nameDup.position(nameIndex.toInt())
+                                    nameDup.get(nameBytes)
+                                    name = String(nameBytes, Charsets.UTF_8)
+                                }
                             }
-                        }
 
-                        if (name.isEmpty()) {
-                            name = if (type == 2) "sub_${java.lang.Long.toHexString(st_value).uppercase()}" else "data_${java.lang.Long.toHexString(st_value).uppercase()}"
-                        }
+                            if (name.isEmpty()) {
+                                name = if (type == 2) "sub_${java.lang.Long.toHexString(st_value).uppercase()}" else "data_${java.lang.Long.toHexString(st_value).uppercase()}"
+                            }
 
-                        val bindStr = when (bind) {
-                            0 -> "LOCAL"
-                            1 -> "GLOBAL"
-                            2 -> "WEAK"
-                            else -> "NUM_$bind"
-                        }
+                            val bindStr = when (bind) {
+                                0 -> "LOCAL"
+                                1 -> "GLOBAL"
+                                2 -> "WEAK"
+                                else -> "NUM_$bind"
+                            }
 
-                        val typeStr = when (type) {
-                            1 -> "OBJECT"
-                            2 -> "FUNC"
-                            else -> "OTHER"
-                        }
+                            val typeStr = when (type) {
+                                1 -> "OBJECT"
+                                2 -> "FUNC"
+                                else -> "OTHER"
+                            }
 
-                        functions.add(
-                            ElfFunction(
-                                address = "0x" + java.lang.Long.toHexString(st_value).uppercase(),
-                                name = demangle(name),
-                                size = "$st_size bytes",
-                                bind = bindStr,
-                                type = typeStr,
-                                index = i
+                            functions.add(
+                                ElfFunction(
+                                    address = "0x" + java.lang.Long.toHexString(st_value).uppercase(),
+                                    name = demangle(name),
+                                    size = "$st_size bytes",
+                                    bind = bindStr,
+                                    type = typeStr,
+                                    index = i
+                                )
                             )
-                        )
+                        }
+                    } catch (e: Exception) {
+                        // Skip corrupted/malformed symbol entry, but continue loop
+                        android.util.Log.e("ElfParser", "Skipping corrupted symbol at index $i: ${e.message}")
                     }
                 }
             }
@@ -297,21 +388,36 @@ class ElfParser(private val bytes: ByteArray) {
         return functions
     }
 
-    private fun ByteArray.indexOfNull(start: Int, end: Int): Int {
-        for (i in start until end) {
-            if (this[i] == 0.toByte()) {
+    private fun ByteBuffer.indexOfNull(start: Int, end: Int): Int {
+        val cap = this.capacity()
+        val actualEnd = minOf(end, cap)
+        for (i in start until actualEnd) {
+            if (this.get(i) == 0.toByte()) {
                 return i - start
             }
         }
-        return end - start
+        return actualEnd - start
     }
 
     /**
-     * Highly simplified C++ demangler representation
+     * Highly robust C++ demangler calling our standard native Itanium __cxa_demangle
      */
     private fun demangle(mangled: String): String {
         if (!mangled.startsWith("_Z")) return mangled
-        // Simple heuristic helper to make names beautiful
+        return try {
+            demangleNative(mangled)
+        } catch (e: UnsatisfiedLinkError) {
+            // Soft fallback to simplified Kotlin regex/substring demangling if native library is missing
+            fallbackDemangle(mangled)
+        } catch (e: Exception) {
+            mangled
+        }
+    }
+
+    /**
+     * Simplified fallback demangler
+     */
+    private fun fallbackDemangle(mangled: String): String {
         try {
             var working = mangled.substring(2)
             if (working.startsWith("N")) {
@@ -350,7 +456,7 @@ class ElfParser(private val bytes: ByteArray) {
                 }
             }
         } catch (e: Exception) {
-            // ignore and return mangled
+            // ignore
         }
         return mangled
     }
@@ -380,17 +486,18 @@ class ElfParser(private val bytes: ByteArray) {
     fun getHexDump(maxRows: Int = 2000): List<HexRow> {
         val list = mutableListOf<HexRow>()
         val rowSize = 16
-        val limit = minOf(bytes.size, maxRows * rowSize)
+        val size = buffer.capacity()
+        val limit = minOf(size, maxRows * rowSize)
 
         for (offset in 0 until limit step rowSize) {
-            val end = minOf(offset + rowSize, bytes.size)
+            val end = minOf(offset + rowSize, size)
             val address = "0x" + java.lang.Integer.toHexString(offset).uppercase().padStart(8, '0')
 
             // Hex representation
             val hexSb = java.lang.StringBuilder()
             for (i in offset until offset + rowSize) {
                 if (i < end) {
-                    val hexByte = java.lang.Integer.toHexString(bytes[i].toInt() and 0xFF).uppercase().padStart(2, '0')
+                    val hexByte = java.lang.Integer.toHexString(buffer.get(i).toInt() and 0xFF).uppercase().padStart(2, '0')
                     hexSb.append(hexByte).append(" ")
                 } else {
                     hexSb.append("   ")
@@ -400,7 +507,7 @@ class ElfParser(private val bytes: ByteArray) {
             // ASCII representation
             val asciiSb = java.lang.StringBuilder()
             for (i in offset until end) {
-                val b = bytes[i].toInt() and 0xFF
+                val b = buffer.get(i).toInt() and 0xFF
                 if (b in 32..126) {
                     asciiSb.append(b.toChar())
                 } else {
@@ -412,5 +519,26 @@ class ElfParser(private val bytes: ByteArray) {
         }
 
         return list
+    }
+
+    // --- Safe primitive ByteBuffer absolute getters ---
+    private fun safeGetInt(buf: ByteBuffer, offset: Int): Int? {
+        if (offset < 0 || offset + 4 > buf.capacity()) return null
+        return buf.getInt(offset)
+    }
+
+    private fun safeGetLong(buf: ByteBuffer, offset: Int): Long? {
+        if (offset < 0 || offset + 8 > buf.capacity()) return null
+        return buf.getLong(offset)
+    }
+
+    private fun safeGetShort(buf: ByteBuffer, offset: Int): Short? {
+        if (offset < 0 || offset + 2 > buf.capacity()) return null
+        return buf.getShort(offset)
+    }
+
+    private fun safeGetByte(buf: ByteBuffer, offset: Int): Byte? {
+        if (offset < 0 || offset >= buf.capacity()) return null
+        return buf.get(offset)
     }
 }

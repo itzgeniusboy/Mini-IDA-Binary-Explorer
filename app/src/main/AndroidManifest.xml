@@ -3,8 +3,6 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Permissions required for Foreground Services and Notifications -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -27,13 +25,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Foreground Service for background binary disassembling & parsing -->
-        <service
-            android:name=".BinaryParsingService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
 
     </application>
 
