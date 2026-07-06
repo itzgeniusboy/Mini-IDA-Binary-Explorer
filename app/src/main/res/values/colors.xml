@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Backgrounds -->
+    <color name="dark_bg">#090A0F</color>
+    <color name="dark_surface">#121420</color>
+    <color name="dark_card">#1A1D2E</color>
+
+    <!-- Neon Accents -->
+    <color name="neon_green">#00FF66</color>
+    <color name="neon_cyan">#00E5FF</color>
+    <color name="neon_pink">#FF007F</color>
+
+    <!-- Text Colors -->
+    <color name="text_primary">#F1F5F9</color>
+    <color name="text_secondary">#94A3B8</color>
+    <color name="text_muted">#64748B</color>
+
+    <!-- Borders and Dividers -->
+    <color name="border_color">#2A2E45</color>
+    <color name="border_active">#00FF66</color>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "Mini IDA",
+  "description": "A premium dark-themed interactive ELF and SO disassembler and analyzer for Android.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginHorizontal="12dp"
+    android:layout_marginVertical="4dp"
+    app:cardBackgroundColor="@color/dark_surface"
+    app:cardCornerRadius="4dp"
+    app:cardElevation="0dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp">
+
+            <!-- Address in neon green -->
+            <TextView
+                android:id="@+id/tv_func_address"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="0x0000A2C0"
+                android:textColor="@color/neon_green"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <!-- Function meta tag in neon pink/cyan -->
+            <TextView
+                android:id="@+id/tv_func_meta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_alignParentEnd="true"
+                android:fontFamily="monospace"
+                android:text="FUNC [GLOBAL]"
+                android:textColor="@color/neon_pink"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </RelativeLayout>
+
+        <!-- Function/Symbol Name (monospace, demangled layout) -->
+        <TextView
+            android:id="@+id/tv_func_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="monospace"
+            android:singleLine="true"
+            android:text="android::String8::clear()"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp">
+
+            <!-- Size of symbol -->
+            <TextView
+                android:id="@+id/tv_func_size"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="SIZE: 124 bytes"
+                android:textColor="@color/text_muted"
+                android:textSize="10sp" />
+
+            <!-- Index or extra data -->
+            <TextView
+                android:id="@+id/tv_func_index"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_alignParentEnd="true"
+                android:fontFamily="monospace"
+                android:text="SYM #251"
+                android:textColor="@color/text_muted"
+                android:textSize="10sp" />
+        </RelativeLayout>
+
+    </LinearLayout>
+</androidx.cardview.widget.CardView>
