@@ -44,6 +44,9 @@ jobs:
     - name: Handle Missing Google Services
       run: echo '{"project_info":{"project_number":"123456789","project_id":"mock-id","storage_bucket":"mock.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:mock","android_client_info":{"package_name":"com.aistudio.miniida.uxrkpt"}},"api_key":[{"current_key":"mock-key"}],"services":{"appinvite_service":{"status":1}}}]}' > app/google-services.json
 
+    - name: Generate Debug Keystore
+      run: keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
     - name: Build Debug APK
       run: gradle assembleDebug --no-daemon
 
