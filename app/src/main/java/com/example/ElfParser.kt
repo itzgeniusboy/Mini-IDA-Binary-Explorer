@@ -51,6 +51,9 @@ class ElfParser(private val buffer: ByteBuffer) {
 
     private external fun demangleNative(mangled: String): String
 
+    external fun disassembleNative(bytes: ByteArray, baseAddress: Long, length: Long): Array<String>
+    external fun decompileNative(bytes: ByteArray, baseAddress: Long, length: Long): String
+
     fun parseHeader(): ElfHeader {
         val size = buffer.capacity()
         if (size < 16) {

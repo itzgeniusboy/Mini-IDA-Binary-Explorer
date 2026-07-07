@@ -42,7 +42,7 @@ class StringsAdapter : ListAdapter<ElfParser.ElfString, StringsAdapter.ViewHolde
 
 // --- FUNCTIONS ADAPTER ---
 
-class FunctionsAdapter : ListAdapter<ElfParser.ElfFunction, FunctionsAdapter.ViewHolder>(DiffCallback) {
+class FunctionsAdapter(private val onItemClick: ((ElfParser.ElfFunction) -> Unit)? = null) : ListAdapter<ElfParser.ElfFunction, FunctionsAdapter.ViewHolder>(DiffCallback) {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val tvAddress: TextView = view.findViewById(R.id.tv_func_address)
@@ -64,6 +64,10 @@ class FunctionsAdapter : ListAdapter<ElfParser.ElfFunction, FunctionsAdapter.Vie
         holder.tvName.text = item.name
         holder.tvSize.text = "SIZE: ${item.size}"
         holder.tvIndex.text = "SYM #${item.index}"
+        
+        holder.itemView.setOnClickListener {
+            onItemClick?.invoke(item)
+        }
     }
 
     companion object DiffCallback : DiffUtil.ItemCallback<ElfParser.ElfFunction>() {
@@ -107,3 +111,49 @@ class HexAdapter : ListAdapter<ElfParser.HexRow, HexAdapter.ViewHolder>(DiffCall
         }
     }
 }
+
+// --- DISASSEMBLY ADAPTER ---
+
+class DisassemblyAdapter : ListAdapter<String, DisassemblyAdapter.ViewHolder>(DiffCallback) {
+
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvLineText: TextView = view.findViewById(R.id.tv_line_text)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_hex_disassembly_line, parent, false)
+        return ViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val item = getItem(position)
+        holder.tvLineText.text = item
+        
+        // Apply micro-highlights for optimized, high-fidelity visual scanning
+        val trimmed = item.trim()
+        when {
+            trimmed.startsWith("void ") || trimmed.startsWith("if ") || trimmed.startsWith("return;") || trimmed.startsWith("goto ") -> {
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // Neon Cyan
+            }
+            trimmed.startsWith("x") || trimmed.startsWith("w") || trimmed.startsWith("*") -> {
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FF007F")) // Neon Pink
+            }
+            trimmed.startsWith("[") -> {
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00FF66")) // Neon Green
+            }
+            else -> {
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FFFFFF")) // Clean White
+            }
+        }
+    }
+
+    companion object DiffCallback : DiffUtil.ItemCallback<String>() {
+        override fun areItemsTheSame(oldItem: String, newItem: String): Boolean {
+            return oldItem == newItem
+        }
+        override fun areContentsTheSame(oldItem: String, newItem: String): Boolean {
+            return oldItem == newItem
+        }
+    }
+}
+

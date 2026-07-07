@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingHorizontal="12dp"
+    android:paddingVertical="3dp"
+    android:background="#0D0E15">
+
+    <TextView
+        android:id="@+id/tv_line_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:text="0x00010D00:  add x0, x1, #0x20"
+        android:textColor="#00E5FF"
+        android:textSize="12sp" />
+
+</LinearLayout>

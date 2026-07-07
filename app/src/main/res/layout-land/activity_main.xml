@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout 
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0A0B10"
+    tools:context=".MainActivity">
+
+    <!-- 35% Guideline for Left/Right Panel Division -->
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/panel_guideline"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        app:layout_constraintGuide_percent="0.35" />
+
+    <!-- Left Panel Navigation (35% Width) -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/left_panel"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#11131C"
+        android:padding="8dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/panel_guideline"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- Left Panel Header -->
+        <TextView
+            android:id="@+id/tv_left_panel_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="FUNCTIONS / SYMBOLS"
+            android:textColor="#FF007F"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:fontFamily="sans-serif-monospace"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Highly optimized vertical searching filter -->
+        <EditText
+            android:id="@+id/et_filter"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:background="#1A1C28"
+            android:hint="Search offsets..."
+            android:textColorHint="#5A6075"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:singleLine="true"
+            android:imeOptions="actionSearch"
+            android:fontFamily="sans-serif-monospace"
+            android:textCursorDrawable="@null"
+            app:layout_constraintTop_toBottomOf="@id/tv_left_panel_title"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- RecyclerView holding functions -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rv_functions"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:scrollbars="vertical"
+            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/et_filter"
+            tools:listitem="@layout/item_function_offset" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- Sleek neon vertical divider guideline decoration -->
+    <View
+        android:id="@+id/v_neon_divider"
+        android:layout_width="2dp"
+        android:layout_height="0dp"
+        android:background="#00E5FF"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/right_panel"
+        app:layout_constraintStart_toEndOf="@id/left_panel"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Right Panel Workbench (65% Width) -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/right_panel"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#0D0E15"
+        android:padding="8dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/panel_guideline"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- Right Panel Title -->
+        <TextView
+            android:id="@+id/tv_right_panel_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="BINARY EXPLORER // DISASSEMBLY &amp; HEX VIEW"
+            android:textColor="#00E5FF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:fontFamily="sans-serif-monospace"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Subtitle showing system or architecture status -->
+        <TextView
+            android:id="@+id/tv_status_bar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="ELF64 | x86_64 | OFFSET: 0x00001D40 | CODE SECTION"
+            android:textColor="#5A6075"
+            android:textSize="10sp"
+            android:fontFamily="sans-serif-monospace"
+            app:layout_constraintTop_toBottomOf="@id/tv_right_panel_title"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- Horizontal ScrollView to prevent horizontal clipping for wide columns -->
+        <HorizontalScrollView
+            android:id="@+id/hsv_workbench"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:fillViewport="true"
+            android:scrollbars="horizontal"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tv_status_bar">
+
+            <!-- RecyclerView holding horizontal columns of Hex and Disassembly code -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rv_hex_disassembly"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:scrollbars="vertical"
+                app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"
+                tools:listitem="@layout/item_hex_disassembly_line" />
+
+        </HorizontalScrollView>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
