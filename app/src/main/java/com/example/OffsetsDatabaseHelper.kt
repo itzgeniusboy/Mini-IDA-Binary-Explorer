@@ -9,7 +9,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
     companion object {
         const val DATABASE_NAME = "offsets.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
 
         const val TABLE_OFFSETS = "offsets"
         const val COLUMN_ID = "id"
@@ -34,10 +34,26 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         db.execSQL("CREATE INDEX idx_offset_hex ON $TABLE_OFFSETS ($COLUMN_OFFSET_HEX)")
         db.execSQL("CREATE INDEX idx_symbol_name ON $TABLE_OFFSETS ($COLUMN_SYMBOL_NAME)")
         db.execSQL("CREATE INDEX idx_file_identifier ON $TABLE_OFFSETS ($COLUMN_FILE_IDENTIFIER)")
+
+        // Add xrefs table
+        val createXrefsTableQuery = """
+            CREATE TABLE xrefs (
+                file_id TEXT,
+                from_addr INTEGER,
+                to_addr INTEGER,
+                xref_type TEXT
+            )
+        """.trimIndent()
+        db.execSQL(createXrefsTableQuery)
+
+        db.execSQL("CREATE INDEX idx_xrefs_file_id ON xrefs (file_id)")
+        db.execSQL("CREATE INDEX idx_xrefs_from ON xrefs (from_addr)")
+        db.execSQL("CREATE INDEX idx_xrefs_to ON xrefs (to_addr)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS $TABLE_OFFSETS")
+        db.execSQL("DROP TABLE IF EXISTS xrefs")
         onCreate(db)
     }
 
@@ -126,6 +142,67 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
                         index = id
                     )
                 )
+            }
+        }
+        return list
+    }
+
+    fun insertXrefs(fileId: String, xrefList: List<XrefEntry>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("xrefs", "file_id = ?", arrayOf(fileId))
+
+            val query = "INSERT INTO xrefs (file_id, from_addr, to_addr, xref_type) VALUES (?, ?, ?, ?)"
+            val statement = db.compileStatement(query)
+
+            for (xref in xrefList) {
+                statement.clearBindings()
+                statement.bindString(1, fileId)
+                statement.bindLong(2, xref.fromAddr)
+                statement.bindLong(3, xref.toAddr)
+                statement.bindString(4, xref.type)
+                statement.executeInsert()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getXrefsTo(fileId: String, address: Long): List<XrefEntry> {
+        val db = readableDatabase
+        val list = mutableListOf<XrefEntry>()
+        val query = "SELECT from_addr, to_addr, xref_type FROM xrefs WHERE file_id = ? AND to_addr = ?"
+        val cursor = db.rawQuery(query, arrayOf(fileId, address.toString()))
+        cursor.use {
+            val fromIdx = cursor.getColumnIndex("from_addr")
+            val toIdx = cursor.getColumnIndex("to_addr")
+            val typeIdx = cursor.getColumnIndex("xref_type")
+            while (cursor.moveToNext()) {
+                val from = if (fromIdx != -1) cursor.getLong(fromIdx) else 0L
+                val to = if (toIdx != -1) cursor.getLong(toIdx) else 0L
+                val type = if (typeIdx != -1) cursor.getString(typeIdx) else ""
+                list.add(XrefEntry(from, to, type))
+            }
+        }
+        return list
+    }
+
+    fun getXrefsFrom(fileId: String, address: Long): List<XrefEntry> {
+        val db = readableDatabase
+        val list = mutableListOf<XrefEntry>()
+        val query = "SELECT from_addr, to_addr, xref_type FROM xrefs WHERE file_id = ? AND from_addr = ?"
+        val cursor = db.rawQuery(query, arrayOf(fileId, address.toString()))
+        cursor.use {
+            val fromIdx = cursor.getColumnIndex("from_addr")
+            val toIdx = cursor.getColumnIndex("to_addr")
+            val typeIdx = cursor.getColumnIndex("xref_type")
+            while (cursor.moveToNext()) {
+                val from = if (fromIdx != -1) cursor.getLong(fromIdx) else 0L
+                val to = if (toIdx != -1) cursor.getLong(toIdx) else 0L
+                val type = if (typeIdx != -1) cursor.getString(typeIdx) else ""
+                list.add(XrefEntry(from, to, type))
             }
         }
         return list

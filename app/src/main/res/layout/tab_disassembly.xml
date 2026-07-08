@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/dark_bg">
+
+    <!-- Navigation toolbar and search filter -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_margin="12dp">
+
+        <Button
+            android:id="@+id/btn_disasm_back"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:text="◀ BACK"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="@color/dark_surface"
+            android:padding="0dp"
+            android:minWidth="64dp"
+            android:enabled="false"
+            android:layout_marginEnd="6dp" />
+
+        <Button
+            android:id="@+id/btn_disasm_forward"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:text="FWD ▶"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="@color/dark_surface"
+            android:padding="0dp"
+            android:minWidth="64dp"
+            android:enabled="false"
+            android:layout_marginEnd="6dp" />
+
+        <EditText
+            android:id="@+id/et_disasm_filter"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:background="@color/dark_surface"
+            android:hint="Search instructions..."
+            android:textColorHint="#5A6075"
+            android:textColor="#00FF66"
+            android:textSize="12sp"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:singleLine="true"
+            android:imeOptions="actionSearch"
+            android:fontFamily="sans-serif-monospace"
+            android:textCursorDrawable="@null" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- Highly Optimized RecyclerView for smooth scrolling on massive instruction sets -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recycler_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingBottom="16dp"
+            android:scrollbarStyle="outsideOverlay"
+            android:scrollbars="vertical"
+            android:scrollbarThumbVertical="@drawable/scrollbar_thumb_neon"
+            android:scrollbarSize="4dp"
+            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+
+        <!-- Loading Placeholder -->
+        <ProgressBar
+            android:id="@+id/loading_indicator"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:indeterminateTint="@color/neon_green"
+            android:visibility="gone" />
+
+        <!-- Empty State View -->
+        <LinearLayout
+            android:id="@+id/empty_state"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="[ ! ]"
+                android:textColor="@color/neon_pink"
+                android:textSize="32sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:fontFamily="monospace"
+                android:text="NO DISASSEMBLY"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:text="Open a valid ELF binary to extract\nand disassemble the .text section."
+                android:textColor="@color/text_muted"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>

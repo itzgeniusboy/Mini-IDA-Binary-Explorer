@@ -157,3 +157,221 @@ class DisassemblyAdapter : ListAdapter<String, DisassemblyAdapter.ViewHolder>(Di
     }
 }
 
+// --- PORTRAIT DISASSEMBLY TAB ADAPTER ---
+
+class DisassemblyTabAdapter(
+    private val onItemClick: ((DisassemblyLine) -> Unit)? = null,
+    private val onItemLongClick: ((DisassemblyLine) -> Boolean)? = null
+) : ListAdapter<DisassemblyLine, DisassemblyTabAdapter.ViewHolder>(DiffCallback) {
+
+    private var highlightAddress: Long? = null
+
+    fun setHighlightAddress(address: Long?) {
+        val oldHighlight = highlightAddress
+        highlightAddress = address
+        
+        // Find indices to notify
+        for (i in 0 until itemCount) {
+            val item = getItem(i)
+            if (item.address == oldHighlight || item.address == address) {
+                notifyItemChanged(i)
+            }
+        }
+    }
+
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvLineText: TextView = view.findViewById(R.id.tv_line_text)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_hex_disassembly_line, parent, false)
+        return ViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val item = getItem(position)
+        val addrStr = "0x" + item.address.toString(16).uppercase().padStart(8, '0')
+        val formatted = "$addrStr:  ${item.bytesHex.padEnd(16)}  ${item.mnemonic.padEnd(8)} ${item.opStr}"
+        holder.tvLineText.text = formatted
+
+        holder.itemView.setOnClickListener {
+            onItemClick?.invoke(item)
+        }
+        holder.itemView.setOnLongClickListener {
+            onItemLongClick?.invoke(item) ?: false
+        }
+
+        if (item.address == highlightAddress) {
+            holder.itemView.setBackgroundColor(android.graphics.Color.parseColor("#3300FF66")) // 20% alpha neon green
+        } else {
+            holder.itemView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        }
+
+        when (item.mnemonic.lowercase()) {
+            "cmp", "tst" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FF007F")) // Neon Pink
+            "b", "bl", "beq", "bne", "b.eq", "b.ne", "b.ge", "b.lt", "b.gt", "b.le", "jmp", "je", "jne" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // Neon Cyan
+            "ldr", "str", "mov" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00FF66")) // Neon Green
+            "add", "sub", "mul", "div" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FFD700")) // Gold
+            "ret" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FF3333")) // Red
+            else -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FFFFFF")) // Clean White
+        }
+    }
+
+    companion object DiffCallback : DiffUtil.ItemCallback<DisassemblyLine>() {
+        override fun areItemsTheSame(oldItem: DisassemblyLine, newItem: DisassemblyLine): Boolean {
+            return oldItem.address == newItem.address
+        }
+        override fun areContentsTheSame(oldItem: DisassemblyLine, newItem: DisassemblyLine): Boolean {
+            return oldItem == newItem
+        }
+    }
+}
+
+sealed class SearchRow {
+    data class Header(val title: String) : SearchRow()
+    data class Address(val addressResult: AddressResult) : SearchRow()
+    data class Symbol(val symbolResult: SymbolResult) : SearchRow()
+    data class StringRow(val stringResult: StringResult) : SearchRow()
+    data class NoResults(val query: String) : SearchRow()
+}
+
+class SearchResultsAdapter(
+    private val onSymbolClick: (SymbolResult) -> Unit,
+    private val onStringClick: (StringResult) -> Unit,
+    private val onAddressClick: (AddressResult) -> Unit
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+    private var items: List<SearchRow> = emptyList()
+
+    fun submitResults(results: SearchResults, query: String) {
+        val list = mutableListOf<SearchRow>()
+
+        if (results.address != null) {
+            list.add(SearchRow.Header("DIRECT ADDRESS JUMP"))
+            list.add(SearchRow.Address(results.address))
+        }
+
+        if (results.symbols.isNotEmpty()) {
+            list.add(SearchRow.Header("FUNCTIONS / SYMBOLS (${results.symbols.size})"))
+            for (sym in results.symbols) {
+                list.add(SearchRow.Symbol(sym))
+            }
+        }
+
+        if (results.strings.isNotEmpty()) {
+            list.add(SearchRow.Header("STRINGS (${results.strings.size})"))
+            for (str in results.strings) {
+                list.add(SearchRow.StringRow(str))
+            }
+        }
+
+        if (list.isEmpty() && query.isNotEmpty()) {
+            list.add(SearchRow.NoResults(query))
+        }
+
+        items = list
+        notifyDataSetChanged()
+    }
+
+    override fun getItemViewType(position: Int): Int {
+        return when (items[position]) {
+            is SearchRow.Header -> 0
+            is SearchRow.Address -> 1
+            is SearchRow.Symbol -> 2
+            is SearchRow.StringRow -> 3
+            is SearchRow.NoResults -> 4
+        }
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        val inflater = LayoutInflater.from(parent.context)
+        return when (viewType) {
+            0 -> {
+                val view = inflater.inflate(android.R.layout.simple_list_item_1, parent, false)
+                HeaderViewHolder(view)
+            }
+            1 -> {
+                val view = inflater.inflate(R.layout.item_xref_list, parent, false)
+                AddressViewHolder(view)
+            }
+            2 -> {
+                val view = inflater.inflate(R.layout.item_xref_list, parent, false)
+                SymbolViewHolder(view)
+            }
+            3 -> {
+                val view = inflater.inflate(R.layout.item_xref_list, parent, false)
+                StringViewHolder(view)
+            }
+            else -> {
+                val view = inflater.inflate(android.R.layout.simple_list_item_1, parent, false)
+                NoResultsViewHolder(view)
+            }
+        }
+    }
+
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        when (val item = items[position]) {
+            is SearchRow.Header -> {
+                val h = holder as HeaderViewHolder
+                h.textView.text = item.title
+                h.textView.setTextColor(android.graphics.Color.parseColor("#94A3B8")) // text_secondary
+                h.textView.textSize = 10f
+                h.textView.paint.isFakeBoldText = true
+                h.textView.setPadding(16, 12, 16, 4)
+            }
+            is SearchRow.Address -> {
+                val h = holder as AddressViewHolder
+                val addrHex = "0x" + item.addressResult.address.toString(16).uppercase()
+                h.tvText.text = "GO TO $addrHex (Disassembly)"
+                h.tvText.setTextColor(android.graphics.Color.parseColor("#00FF66")) // neon_green
+                h.itemView.setOnClickListener { onAddressClick(item.addressResult) }
+            }
+            is SearchRow.Symbol -> {
+                val h = holder as SymbolViewHolder
+                val addrHex = "0x" + item.symbolResult.address.toString(16).uppercase()
+                h.tvText.text = "$addrHex: ${item.symbolResult.name}"
+                h.tvText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // neon_cyan
+                h.itemView.setOnClickListener { onSymbolClick(item.symbolResult) }
+            }
+            is SearchRow.StringRow -> {
+                val h = holder as StringViewHolder
+                val addrHex = "0x" + item.stringResult.address.toString(16).uppercase()
+                h.tvText.text = "$addrHex: \"${item.stringResult.text}\""
+                h.tvText.setTextColor(android.graphics.Color.parseColor("#FF007F")) // neon_pink
+                h.itemView.setOnClickListener { onStringClick(item.stringResult) }
+            }
+            is SearchRow.NoResults -> {
+                val h = holder as NoResultsViewHolder
+                h.textView.text = "No results found for: \"${item.query}\""
+                h.textView.setTextColor(android.graphics.Color.parseColor("#FF007F")) // neon_pink
+                h.textView.textSize = 12f
+                h.textView.setPadding(16, 16, 16, 16)
+            }
+        }
+    }
+
+    override fun getItemCount(): Int = items.size
+
+    class HeaderViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val textView: TextView = view.findViewById(android.R.id.text1)
+    }
+
+    class AddressViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvText: TextView = view.findViewById(R.id.tv_xref_text)
+    }
+
+    class SymbolViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvText: TextView = view.findViewById(R.id.tv_xref_text)
+    }
+
+    class StringViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvText: TextView = view.findViewById(R.id.tv_xref_text)
+    }
+
+    class NoResultsViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val textView: TextView = view.findViewById(android.R.id.text1)
+    }
+}
+
+
+

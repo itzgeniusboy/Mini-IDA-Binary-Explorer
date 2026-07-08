@@ -3,6 +3,13 @@ package com.example
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+data class DisassemblyLine(
+    val address: Long,
+    val bytesHex: String,
+    val mnemonic: String,
+    val opStr: String
+)
+
 class ElfParser(private val buffer: ByteBuffer) {
 
     // Secondary constructor for backwards compatibility
@@ -15,7 +22,8 @@ class ElfParser(private val buffer: ByteBuffer) {
         val machine: String,
         val entryPoint: String,
         val classType: String,
-        val endianType: String
+        val endianType: String,
+        val machineVal: Int = 0
     )
 
     data class ElfString(
@@ -39,6 +47,11 @@ class ElfParser(private val buffer: ByteBuffer) {
         val ascii: String
     )
 
+    data class TextSectionInfo(
+        val virtualAddress: Long,
+        val bytes: ByteArray
+    )
+
     companion object {
         init {
             try {
@@ -53,6 +66,169 @@ class ElfParser(private val buffer: ByteBuffer) {
 
     external fun disassembleNative(bytes: ByteArray, baseAddress: Long, length: Long): Array<String>
     external fun decompileNative(bytes: ByteArray, baseAddress: Long, length: Long): String
+    external fun disassembleSection(bytes: ByteArray, baseAddress: Long, elfMachineType: Int, is64Bit: Boolean): Array<DisassemblyLine>?
+
+    fun findTextSection(): TextSectionInfo? {
+        val header = parseHeader()
+        if (!header.isElf) return null
+
+        val is64Bit = header.is64Bit
+        val isLittleEndian = header.isLittleEndian
+        val localBuffer = buffer.duplicate()
+        localBuffer.order(if (isLittleEndian) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
+
+        // Try Section Headers first
+        try {
+            val shoff = if (is64Bit) {
+                safeGetLong(localBuffer, 40) ?: 0L
+            } else {
+                (safeGetInt(localBuffer, 32) ?: 0).toLong() and 0xFFFFFFFFL
+            }
+            val shentsize = if (is64Bit) {
+                (safeGetShort(localBuffer, 58) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 46) ?: 0).toInt()
+            }
+            val shnum = if (is64Bit) {
+                (safeGetShort(localBuffer, 60) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 48) ?: 0).toInt()
+            }
+            val shstrndx = if (is64Bit) {
+                (safeGetShort(localBuffer, 62) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 50) ?: 0).toInt()
+            }
+
+            if (shoff > 0 && shnum > 0 && shstrndx >= 0 && shstrndx < shnum) {
+                // Get .shstrtab offset and size
+                val shstrOffsetSec = shoff + shstrndx * shentsize
+                val shstr_offset = if (is64Bit) {
+                    safeGetLong(localBuffer, (shstrOffsetSec + 24).toInt()) ?: 0L
+                } else {
+                    (safeGetInt(localBuffer, (shstrOffsetSec + 16).toInt()) ?: 0).toLong() and 0xFFFFFFFFL
+                }
+                val shstr_size = if (is64Bit) {
+                    safeGetLong(localBuffer, (shstrOffsetSec + 32).toInt()) ?: 0L
+                } else {
+                    (safeGetInt(localBuffer, (shstrOffsetSec + 20).toInt()) ?: 0).toLong() and 0xFFFFFFFFL
+                }
+
+                if (shstr_offset > 0) {
+                    for (i in 0 until shnum) {
+                        val secOffset = shoff + i * shentsize
+                        if (secOffset + shentsize > localBuffer.capacity()) break
+
+                        val sh_name = safeGetInt(localBuffer, secOffset.toInt()) ?: continue
+                        val sh_addr = if (is64Bit) {
+                            safeGetLong(localBuffer, (secOffset + 16).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (secOffset + 12).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+                        val sh_offset = if (is64Bit) {
+                            safeGetLong(localBuffer, (secOffset + 24).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (secOffset + 16).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+                        val sh_size = if (is64Bit) {
+                            safeGetLong(localBuffer, (secOffset + 32).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (secOffset + 20).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+
+                        // Resolve name
+                        val nameIndex = shstr_offset + sh_name
+                        if (nameIndex < localBuffer.capacity()) {
+                            val nameLen = localBuffer.indexOfNull(nameIndex.toInt(), (shstr_offset + shstr_size).toInt())
+                            if (nameLen > 0 && nameIndex + nameLen <= localBuffer.capacity()) {
+                                val nameBytes = ByteArray(nameLen)
+                                val nameDup = localBuffer.duplicate()
+                                nameDup.position(nameIndex.toInt())
+                                nameDup.get(nameBytes)
+                                val name = String(nameBytes, Charsets.UTF_8)
+                                if (name == ".text" && sh_size > 0 && sh_offset > 0) {
+                                    val textBytes = ByteArray(sh_size.toInt().coerceAtMost(localBuffer.capacity() - sh_offset.toInt()))
+                                    val textDup = localBuffer.duplicate()
+                                    textDup.position(sh_offset.toInt())
+                                    textDup.get(textBytes)
+                                    return TextSectionInfo(sh_addr, textBytes)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ElfParser", "Error reading .text section from section headers: ${e.message}")
+        }
+
+        // Fallback to Program Headers (PT_LOAD with executable permission)
+        try {
+            val phoff = if (is64Bit) {
+                safeGetLong(localBuffer, 32) ?: 0L
+            } else {
+                (safeGetInt(localBuffer, 28) ?: 0).toLong() and 0xFFFFFFFFL
+            }
+            val phentsize = if (is64Bit) {
+                (safeGetShort(localBuffer, 54) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 42) ?: 0).toInt()
+            }
+            val phnum = if (is64Bit) {
+                (safeGetShort(localBuffer, 56) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 44) ?: 0).toInt()
+            }
+
+            if (phoff > 0 && phnum > 0) {
+                for (i in 0 until phnum) {
+                    val phOffset = phoff + i * phentsize
+                    if (phOffset + phentsize > localBuffer.capacity()) break
+
+                    val p_type = safeGetInt(localBuffer, phOffset.toInt()) ?: continue
+                    if (p_type == 1) { // PT_LOAD
+                        val p_flags = if (is64Bit) {
+                            safeGetInt(localBuffer, (phOffset + 4).toInt()) ?: 0
+                        } else {
+                            safeGetInt(localBuffer, (phOffset + 24).toInt()) ?: 0
+                        }
+
+                        val isExecutable = (p_flags and 1) != 0 // PF_X is 1
+
+                        if (isExecutable) {
+                            val p_offset = if (is64Bit) {
+                                safeGetLong(localBuffer, (phOffset + 8).toInt()) ?: continue
+                            } else {
+                                (safeGetInt(localBuffer, (phOffset + 4).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                            }
+                            val p_vaddr = if (is64Bit) {
+                                safeGetLong(localBuffer, (phOffset + 16).toInt()) ?: continue
+                            } else {
+                                (safeGetInt(localBuffer, (phOffset + 8).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                            }
+                            val p_filesz = if (is64Bit) {
+                                safeGetLong(localBuffer, (phOffset + 32).toInt()) ?: continue
+                            } else {
+                                (safeGetInt(localBuffer, (phOffset + 16).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                            }
+
+                            if (p_filesz > 0 && p_offset > 0) {
+                                val textBytes = ByteArray(p_filesz.toInt().coerceAtMost(localBuffer.capacity() - p_offset.toInt()))
+                                val textDup = localBuffer.duplicate()
+                                textDup.position(p_offset.toInt())
+                                textDup.get(textBytes)
+                                return TextSectionInfo(p_vaddr, textBytes)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ElfParser", "Error reading executable PT_LOAD segment: ${e.message}")
+        }
+
+        return null
+    }
 
     fun parseHeader(): ElfHeader {
         val size = buffer.capacity()
@@ -110,7 +286,8 @@ class ElfParser(private val buffer: ByteBuffer) {
             machine = machine,
             entryPoint = entryPoint,
             classType = if (is64Bit) "ELF64" else "ELF32",
-            endianType = if (isLittleEndian) "Little Endian" else "Big Endian"
+            endianType = if (isLittleEndian) "Little Endian" else "Big Endian",
+            machineVal = machineVal
         )
     }
 

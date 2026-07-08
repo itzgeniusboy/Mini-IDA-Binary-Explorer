@@ -40,12 +40,46 @@ class MainActivity : AppCompatActivity() {
     private var allFunctionsCached: List<ElfParser.ElfFunction> = emptyList()
     private var allStringsCached: List<ElfParser.ElfString> = emptyList()
     private var allHexCached: List<ElfParser.HexRow> = emptyList()
+    private var allDisassemblyCached: List<DisassemblyLine> = emptyList()
 
     // Adapters
     private lateinit var functionsAdapter: FunctionsAdapter
     private val stringsAdapter = StringsAdapter()
     private val hexAdapter = HexAdapter()
     private val disassemblyAdapter = DisassemblyAdapter()
+
+    // Global Search UI and State
+    private var etGlobalSearch: EditText? = null
+    private var pbSearchLoading: ProgressBar? = null
+    private var cardSearchResults: CardView? = null
+    private var rvSearchResults: RecyclerView? = null
+    private var tvCloseSearch: TextView? = null
+    private lateinit var searchResultsAdapter: SearchResultsAdapter
+    private var searchJob: kotlinx.coroutines.Job? = null
+
+    // Navigation and back/forward buttons
+    private var btnDisasmBack: android.widget.Button? = null
+    private var btnDisasmForward: android.widget.Button? = null
+
+    private val navigationController = NavigationController { targetAddress ->
+        scrollToDisassemblyAddress(targetAddress)
+        updateNavigationButtons()
+    }
+
+    private val disassemblyTabAdapter = DisassemblyTabAdapter(
+        onItemClick = { line ->
+            val target = XrefAnalyzer.extractTargetAddress(line.opStr)
+            if (target != null) {
+                if (allDisassemblyCached.isNotEmpty() && target >= allDisassemblyCached.first().address && target <= allDisassemblyCached.last().address) {
+                    navigateToAddress(target)
+                }
+            }
+        },
+        onItemLongClick = { line ->
+            showXrefDialog(line.address, "0x" + line.address.toString(16).uppercase())
+            true
+        }
+    )
 
     // Portrait views
     private lateinit var tvFilePath: TextView
@@ -88,10 +122,10 @@ class MainActivity : AppCompatActivity() {
         offsetsDbHelper = OffsetsDatabaseHelper(this)
         functionsAdapter = FunctionsAdapter { selectedFunction ->
             lastSelectedFunction = selectedFunction
-            if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                loadDisassemblyAndDecompilation(selectedFunction)
-            } else {
-                viewPager.currentItem = 2
+            val addrHex = selectedFunction.address.removePrefix("0x")
+            val addressLong = addrHex.toLongOrNull(16)
+            if (addressLong != null) {
+                showXrefDialog(addressLong, selectedFunction.name)
             }
         }
 
@@ -155,6 +189,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             setupViewPager()
+            setupGlobalSearch()
 
             if (currentFileName.isNotEmpty()) {
                 tvFilePath.text = currentFileName
@@ -172,8 +207,9 @@ class MainActivity : AppCompatActivity() {
                 stringsAdapter.submitList(allStringsCached)
                 functionsAdapter.submitList(allFunctionsCached)
                 hexAdapter.submitList(allHexCached)
+                disassemblyTabAdapter.submitList(allDisassemblyCached)
 
-                for (i in 0..2) {
+                for (i in 0..3) {
                     tabProgressBars[i]?.visibility = View.GONE
                     tabEmptyStates[i]?.visibility = View.GONE
                     tabRecyclerViews[i]?.visibility = View.VISIBLE
@@ -186,23 +222,51 @@ class MainActivity : AppCompatActivity() {
         val pagerAdapter = TabPagerAdapter(
             stringsAdapter,
             functionsAdapter,
-            hexAdapter
-        ) { position, recyclerView, progress, emptyState ->
+            hexAdapter,
+            disassemblyTabAdapter
+        ) { position, itemView, recyclerView, progress, emptyState ->
             tabRecyclerViews[position] = recyclerView
             tabProgressBars[position] = progress
             tabEmptyStates[position] = emptyState
+
+            if (position == 3) {
+                val etDisasmFilter: EditText? = itemView.findViewById(R.id.et_disasm_filter)
+                etDisasmFilter?.addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        val query = s?.toString() ?: ""
+                        filterDisassembly(query)
+                    }
+                    override fun afterTextChanged(s: android.text.Editable?) {}
+                })
+
+                val btnBack: android.widget.Button? = itemView.findViewById(R.id.btn_disasm_back)
+                val btnForward: android.widget.Button? = itemView.findViewById(R.id.btn_disasm_forward)
+
+                btnBack?.setOnClickListener {
+                    navigationController.goBack()
+                }
+                btnForward?.setOnClickListener {
+                    navigationController.goForward()
+                }
+
+                btnDisasmBack = btnBack
+                btnDisasmForward = btnForward
+                updateNavigationButtons()
+            }
 
             updateTabPlaceholderState(position)
         }
 
         viewPager.adapter = pagerAdapter
-        viewPager.offscreenPageLimit = 3
+        viewPager.offscreenPageLimit = 4
 
         TabLayoutMediator(tabLayout, viewPager) { tab, position ->
             tab.text = when (position) {
                 0 -> "STRINGS"
                 1 -> "FUNCTIONS"
-                2 -> "HEX/DISASM"
+                2 -> "HEX"
+                3 -> "DISASSEMBLY"
                 else -> "TAB"
             }
         }.attach()
@@ -216,7 +280,7 @@ class MainActivity : AppCompatActivity() {
         currentFileName = displayName
         tvFilePath.text = displayName
 
-        for (i in 0..2) {
+        for (i in 0..3) {
             tabProgressBars[i]?.visibility = View.VISIBLE
             tabEmptyStates[i]?.visibility = View.GONE
         }
@@ -237,15 +301,48 @@ class MainActivity : AppCompatActivity() {
                     val functions = parser.parseSymbols()
                     val hexDump = parser.getHexDump()
 
+                    val textSection = parser.findTextSection()
+                    val disassembly = if (textSection != null) {
+                        parser.disassembleSection(
+                            textSection.bytes,
+                            textSection.virtualAddress,
+                            header.machineVal,
+                            header.is64Bit
+                        ) ?: emptyArray()
+                    } else {
+                        emptyArray()
+                    }
+                    val disassemblyList = disassembly.toList()
+
                     allFunctionsCached = functions
                     allStringsCached = strings
                     allHexCached = hexDump
+                    allDisassemblyCached = disassemblyList
 
                     offsetsDbHelper.insertOffsetsBulk(displayName, functions, header.classType)
+
+                    if (disassemblyList.size > 5000) {
+                        withContext(Dispatchers.Main) {
+                            android.widget.Toast.makeText(
+                                this@MainActivity,
+                                "Analyzing ${disassemblyList.size} instructions for XREFs...",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+
+                    val xrefs = withContext(Dispatchers.Default) {
+                        XrefAnalyzer.analyze(disassemblyList)
+                    }
+                    offsetsDbHelper.insertXrefs(displayName, xrefs)
 
                     withContext(Dispatchers.Main) {
                         statusBadge.text = "PARSED"
                         statusBadge.setTextColor(getColor(R.color.neon_green))
+
+                        navigationController.clear()
+                        disassemblyTabAdapter.setHighlightAddress(null)
+                        updateNavigationButtons()
 
                         if (header.isElf) {
                             infoPanelCard.visibility = View.VISIBLE
@@ -264,8 +361,9 @@ class MainActivity : AppCompatActivity() {
                         stringsAdapter.submitList(strings)
                         functionsAdapter.submitList(functions)
                         hexAdapter.submitList(hexDump)
+                        disassemblyTabAdapter.submitList(disassemblyList)
 
-                        for (i in 0..2) {
+                        for (i in 0..3) {
                             tabProgressBars[i]?.visibility = View.GONE
                             tabEmptyStates[i]?.visibility = View.GONE
                             tabRecyclerViews[i]?.visibility = View.VISIBLE
@@ -279,7 +377,7 @@ class MainActivity : AppCompatActivity() {
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Error reading binary: ${e.localizedMessage}"
 
-                    for (i in 0..2) {
+                    for (i in 0..3) {
                         tabProgressBars[i]?.visibility = View.GONE
                         tabEmptyStates[i]?.visibility = View.VISIBLE
                     }
@@ -356,6 +454,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun filterDisassembly(query: String) {
+        lifecycleScope.launch(Dispatchers.Default) {
+            val filtered = if (query.isBlank()) {
+                allDisassemblyCached
+            } else {
+                allDisassemblyCached.filter {
+                    val addrStr = "0x" + it.address.toString(16).uppercase()
+                    addrStr.contains(query, ignoreCase = true) ||
+                    it.bytesHex.contains(query, ignoreCase = true) ||
+                    it.mnemonic.contains(query, ignoreCase = true) ||
+                    it.opStr.contains(query, ignoreCase = true)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                disassemblyTabAdapter.submitList(filtered)
+            }
+        }
+    }
+
     private fun updateTabPlaceholderState(position: Int) {
         if (binaryBuffer == null) {
             tabEmptyStates[position]?.visibility = View.VISIBLE
@@ -384,6 +501,215 @@ class MainActivity : AppCompatActivity() {
         }
         return name
     }
+
+    private fun showXrefDialog(address: Long, title: String) {
+        val context = this
+        val fileId = currentFileName
+        if (fileId.isEmpty()) return
+
+        lifecycleScope.launch(Dispatchers.Default) {
+            val calledBy = offsetsDbHelper.getXrefsTo(fileId, address)
+            val calls = offsetsDbHelper.getXrefsFrom(fileId, address)
+
+            withContext(Dispatchers.Main) {
+                val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_xref_details, null)
+                val tvDialogTitle: TextView = dialogView.findViewById(R.id.tv_dialog_title)
+                val containerCalledBy: android.widget.LinearLayout = dialogView.findViewById(R.id.container_called_by)
+                val containerCalls: android.widget.LinearLayout = dialogView.findViewById(R.id.container_calls)
+                val tvCalledByHeader: TextView = dialogView.findViewById(R.id.tv_called_by_header)
+                val tvCallsHeader: TextView = dialogView.findViewById(R.id.tv_calls_header)
+
+                tvDialogTitle.text = "XREFS FOR $title"
+                tvCalledByHeader.text = "CALLED BY (${calledBy.size})"
+                tvCallsHeader.text = "CALLS (${calls.size})"
+
+                val dialog = androidx.appcompat.app.AlertDialog.Builder(context)
+                    .setView(dialogView)
+                    .create()
+
+                // Populate CALLED BY
+                if (calledBy.isEmpty()) {
+                    val emptyTv = TextView(context).apply {
+                        text = " No incoming references found."
+                        setTextColor(android.graphics.Color.parseColor("#5A6075"))
+                        textSize = 12f
+                        setPadding(16, 8, 16, 8)
+                    }
+                    containerCalledBy.addView(emptyTv)
+                } else {
+                    for (ref in calledBy) {
+                        val itemView = LayoutInflater.from(context).inflate(R.layout.item_xref_list, containerCalledBy, false)
+                        val tvRefText: TextView = itemView.findViewById(R.id.tv_xref_text)
+                        val fromHex = "0x" + ref.fromAddr.toString(16).uppercase()
+                        
+                        val symbol = allFunctionsCached.find { it.address.removePrefix("0x").toLongOrNull(16) == ref.fromAddr }
+                        val label = if (symbol != null) "$fromHex (${symbol.name})" else fromHex
+                        tvRefText.text = "← $label"
+                        
+                        itemView.setOnClickListener {
+                            dialog.dismiss()
+                            navigateToAddress(ref.fromAddr)
+                        }
+                        containerCalledBy.addView(itemView)
+                    }
+                }
+
+                // Populate CALLS
+                if (calls.isEmpty()) {
+                    val emptyTv = TextView(context).apply {
+                        text = " No outgoing references found."
+                        setTextColor(android.graphics.Color.parseColor("#5A6075"))
+                        textSize = 12f
+                        setPadding(16, 8, 16, 8)
+                    }
+                    containerCalls.addView(emptyTv)
+                } else {
+                    for (ref in calls) {
+                        val itemView = LayoutInflater.from(context).inflate(R.layout.item_xref_list, containerCalls, false)
+                        val tvRefText: TextView = itemView.findViewById(R.id.tv_xref_text)
+                        val toHex = "0x" + ref.toAddr.toString(16).uppercase()
+
+                        val symbol = allFunctionsCached.find { it.address.removePrefix("0x").toLongOrNull(16) == ref.toAddr }
+                        val label = if (symbol != null) "$toHex (${symbol.name})" else toHex
+                        tvRefText.text = "→ $label"
+
+                        itemView.setOnClickListener {
+                            dialog.dismiss()
+                            navigateToAddress(ref.toAddr)
+                        }
+                        containerCalls.addView(itemView)
+                    }
+                }
+
+                dialog.show()
+                dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+            }
+        }
+    }
+
+    private fun navigateToAddress(address: Long) {
+        if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
+            viewPager.currentItem = 3
+        }
+        navigationController.navigateTo(address)
+    }
+
+    private fun updateNavigationButtons() {
+        btnDisasmBack?.isEnabled = navigationController.canGoBack()
+        btnDisasmForward?.isEnabled = navigationController.canGoForward()
+    }
+
+    private fun scrollToDisassemblyAddress(address: Long) {
+        val index = allDisassemblyCached.indexOfFirst { it.address == address }
+        if (index != -1) {
+            val recyclerView = tabRecyclerViews[3]
+            val layoutManager = recyclerView?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
+            layoutManager?.scrollToPositionWithOffset(index, 0)
+            disassemblyTabAdapter.setHighlightAddress(address)
+        }
+    }
+
+    private fun setupGlobalSearch() {
+        etGlobalSearch = findViewById(R.id.et_global_search)
+        pbSearchLoading = findViewById(R.id.pb_search_loading)
+        cardSearchResults = findViewById(R.id.card_search_results)
+        rvSearchResults = findViewById(R.id.rv_search_results)
+        tvCloseSearch = findViewById(R.id.tv_close_search)
+
+        if (etGlobalSearch == null) return
+
+        searchResultsAdapter = SearchResultsAdapter(
+            onSymbolClick = { sym ->
+                navigateToAddress(sym.address)
+                hideSearchResults()
+            },
+            onStringClick = { str ->
+                navigateToStringAddress(str.address)
+                hideSearchResults()
+            },
+            onAddressClick = { addr ->
+                navigateToAddress(addr.address)
+                hideSearchResults()
+            }
+        )
+
+        rvSearchResults?.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
+        rvSearchResults?.adapter = searchResultsAdapter
+
+        etGlobalSearch?.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                val query = s?.toString() ?: ""
+                performDebouncedSearch(query)
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+
+        tvCloseSearch?.setOnClickListener {
+            etGlobalSearch?.text?.clear()
+            hideSearchResults()
+        }
+    }
+
+    private fun performDebouncedSearch(query: String) {
+        searchJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            hideSearchResults()
+            return
+        }
+
+        searchJob = lifecycleScope.launch {
+            kotlinx.coroutines.delay(300)
+
+            val progressJob = launch {
+                kotlinx.coroutines.delay(200)
+                pbSearchLoading?.visibility = View.VISIBLE
+            }
+
+            try {
+                val results = SearchEngine.search(
+                    query = trimmed,
+                    functions = allFunctionsCached,
+                    strings = allStringsCached,
+                    disassembly = allDisassemblyCached
+                )
+
+                progressJob.cancel()
+                pbSearchLoading?.visibility = View.GONE
+
+                searchResultsAdapter.submitResults(results, trimmed)
+                cardSearchResults?.visibility = View.VISIBLE
+            } catch (e: Exception) {
+                progressJob.cancel()
+                pbSearchLoading?.visibility = View.GONE
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun hideSearchResults() {
+        cardSearchResults?.visibility = View.GONE
+    }
+
+    private fun navigateToStringAddress(address: Long) {
+        if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
+            viewPager.currentItem = 0
+        }
+        scrollToStringsAddress(address)
+    }
+
+    private fun scrollToStringsAddress(address: Long) {
+        val index = allStringsCached.indexOfFirst {
+            val itemOffsetLong = it.offset.removePrefix("0x").toLongOrNull(16)
+            itemOffsetLong == address
+        }
+        if (index != -1) {
+            val recyclerView = tabRecyclerViews[0]
+            val layoutManager = recyclerView?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
+            layoutManager?.scrollToPositionWithOffset(index, 0)
+        }
+    }
 }
 
 // --- VIEW PAGER 2 ADAPTER ---
@@ -392,7 +718,8 @@ class TabPagerAdapter(
     private val stringsAdapter: StringsAdapter,
     private val functionsAdapter: FunctionsAdapter,
     private val hexAdapter: HexAdapter,
-    private val onInitTab: (position: Int, recyclerView: RecyclerView, progress: ProgressBar, emptyState: View) -> Unit
+    private val disassemblyTabAdapter: DisassemblyTabAdapter,
+    private val onInitTab: (position: Int, itemView: View, recyclerView: RecyclerView, progress: ProgressBar, emptyState: View) -> Unit
 ) : RecyclerView.Adapter<TabPagerAdapter.ViewHolder>() {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -401,10 +728,15 @@ class TabPagerAdapter(
         val emptyState: View = view.findViewById(R.id.empty_state)
     }
 
-    override fun getItemCount(): Int = 3
+    override fun getItemCount(): Int = 4
+
+    override fun getItemViewType(position: Int): Int {
+        return position
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.tab_recycler, parent, false)
+        val layoutId = if (viewType == 3) R.layout.tab_disassembly else R.layout.tab_recycler
+        val view = LayoutInflater.from(parent.context).inflate(layoutId, parent, false)
         return ViewHolder(view)
     }
 
@@ -418,8 +750,9 @@ class TabPagerAdapter(
             0 -> holder.recyclerView.adapter = stringsAdapter
             1 -> holder.recyclerView.adapter = functionsAdapter
             2 -> holder.recyclerView.adapter = hexAdapter
+            3 -> holder.recyclerView.adapter = disassemblyTabAdapter
         }
-        onInitTab(position, holder.recyclerView, holder.progress, holder.emptyState)
+        onInitTab(position, holder.itemView, holder.recyclerView, holder.progress, holder.emptyState)
     }
 }
 

@@ -65,6 +65,111 @@
                     android:textStyle="bold" />
             </RelativeLayout>
 
+            <!-- Global Search Card -->
+            <androidx.cardview.widget.CardView
+                android:id="@+id/search_card"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                app:cardBackgroundColor="@color/dark_surface"
+                app:cardCornerRadius="8dp"
+                app:cardElevation="2dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="6dp">
+
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="24dp"
+                        android:src="@android:drawable/ic_menu_search"
+                        app:tint="@color/neon_green"
+                        android:layout_marginEnd="8dp"
+                        android:contentDescription="Search Icon" />
+
+                    <EditText
+                        android:id="@+id/et_global_search"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_weight="1"
+                        android:background="@android:color/transparent"
+                        android:hint="Global Search (Functions, Strings, Hex...)"
+                        android:textColorHint="#5A6075"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:singleLine="true"
+                        android:imeOptions="actionSearch"
+                        android:fontFamily="sans-serif-monospace"
+                        android:textCursorDrawable="@null" />
+
+                    <ProgressBar
+                        android:id="@+id/pb_search_loading"
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:visibility="gone"
+                        android:indeterminateTint="@color/neon_cyan"
+                        style="?android:attr/progressBarStyleSmall" />
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
+            <!-- Search Results Dropdown Card -->
+            <androidx.cardview.widget.CardView
+                android:id="@+id/card_search_results"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:visibility="gone"
+                app:cardBackgroundColor="@color/dark_surface"
+                app:cardCornerRadius="8dp"
+                app:cardElevation="4dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <RelativeLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="SEARCH RESULTS"
+                            android:textColor="@color/neon_cyan"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace" />
+
+                        <TextView
+                            android:id="@+id/tv_close_search"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_alignParentEnd="true"
+                            android:text="[CLOSE]"
+                            android:textColor="@color/neon_pink"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:clickable="true"
+                            android:focusable="true" />
+                    </RelativeLayout>
+
+                    <!-- Scrollable results list -->
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rv_search_results"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:scrollbars="vertical" />
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
             <!-- Loader Card with Neon Border Accent -->
             <androidx.cardview.widget.CardView
                 android:layout_width="match_parent"
