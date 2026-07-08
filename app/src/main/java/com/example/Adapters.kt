@@ -500,6 +500,24 @@ class DisassemblyTabAdapter(
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = getItem(position)
         
+        if (item.address == -1L) {
+            holder.ivLineBookmark.visibility = View.GONE
+            holder.tvCommentText.visibility = View.GONE
+            val spannable = SpannableStringBuilder("${item.mnemonic}\n${item.opStr}")
+            spannable.setSpan(
+                ForegroundColorSpan(android.graphics.Color.parseColor("#00FF66")),
+                0,
+                spannable.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            holder.tvLineText.text = spannable
+            holder.itemView.setOnClickListener(null)
+            holder.itemView.setOnLongClickListener(null)
+            return
+        } else {
+            holder.ivLineBookmark.visibility = View.VISIBLE
+        }
+        
         val isBookmarked = BookmarkRepository.isBookmarked(item.address)
         if (isBookmarked) {
             holder.ivLineBookmark.setImageResource(android.R.drawable.btn_star_big_on)

@@ -620,6 +620,7 @@ class MainActivity : AppCompatActivity() {
 
     private var loadingDialog: Dialog? = null
     private val loadingProgressState = mutableStateOf<LoadProgress?>(null)
+    private var isUiInitializedEarly = false
     private var isDisassemblingChunk = false
 
     private fun loadElfFile(
@@ -748,6 +749,8 @@ class MainActivity : AppCompatActivity() {
     private fun startElfProgressiveLoad(uri: Uri, displayName: String) {
         statusBadge.text = "LOADING..."
         statusBadge.setTextColor(getColor(R.color.neon_pink))
+        isUiInitializedEarly = false
+        findViewById<androidx.cardview.widget.CardView>(R.id.card_analysis_status)?.visibility = View.GONE
 
         currentFileName = displayName
         tvFilePath.text = displayName
@@ -776,11 +779,13 @@ class MainActivity : AppCompatActivity() {
                 createLoadFlow(uri, displayName).collect { progress ->
                     withContext(Dispatchers.Main) {
                         loadingProgressState.value = progress
+                        updatePersistentStatusCard(progress)
                     }
                 }
             } catch (e: CancellationException) {
                 withContext(Dispatchers.Main) {
                     loadingDialog?.dismiss()
+                    findViewById<androidx.cardview.widget.CardView>(R.id.card_analysis_status)?.visibility = View.GONE
                     statusBadge.text = "CANCELLED"
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Load cancelled by user"
@@ -789,6 +794,7 @@ class MainActivity : AppCompatActivity() {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
                     loadingDialog?.dismiss()
+                    findViewById<androidx.cardview.widget.CardView>(R.id.card_analysis_status)?.visibility = View.GONE
                     statusBadge.text = "ERR_READ"
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Error reading binary: ${e.localizedMessage}"
@@ -851,6 +857,112 @@ class MainActivity : AppCompatActivity() {
         loadingDialog = dialog
     }
 
+    private fun checkAndInitializeUiEarly(header: ElfParser.ElfHeader) {
+        if (isUiInitializedEarly) return
+        isUiInitializedEarly = true
+
+        loadingDialog?.dismiss()
+        statusBadge.text = "ANALYZING"
+        statusBadge.setTextColor(getColor(R.color.neon_cyan))
+
+        navigationController.clear()
+        disassemblyTabAdapter.setHighlightAddress(null)
+        updateNavigationButtons()
+
+        if (header.isElf) {
+            infoPanelCard.visibility = View.VISIBLE
+            tvElfClass.text = header.classType
+            tvElfMachine.text = header.machine
+            tvElfEntry.text = header.entryPoint
+            tvElfEndian.text = header.endianType
+        } else {
+            infoPanelCard.visibility = View.VISIBLE
+            tvElfClass.text = "RAW DATA (Non-ELF)"
+            tvElfMachine.text = "N/A"
+            tvElfEntry.text = "0x0"
+            tvElfEndian.text = "System Default"
+        }
+
+        stringsAdapter.submitList(allStringsCached)
+        functionsAdapter.submitList(allFunctionsCached)
+        hexAdapter.submitList(allHexCached)
+        
+        if (allDisassemblyCached.isEmpty() && loadingProgressState.value?.stage != LoadStage.DONE) {
+            disassemblyTabAdapter.submitList(listOf(
+                DisassemblyLine(
+                    address = -1L,
+                    bytesHex = "",
+                    mnemonic = "// [STILL ANALYZING THIS SECTION...]",
+                    opStr = "The main .text segment is being extracted and disassembled incrementally..."
+                )
+            ))
+        } else {
+            disassemblyTabAdapter.submitList(allDisassemblyCached)
+        }
+
+        for (i in 0..3) {
+            tabProgressBars[i]?.visibility = View.GONE
+            tabEmptyStates[i]?.visibility = View.GONE
+            tabRecyclerViews[i]?.visibility = View.VISIBLE
+        }
+
+        tabRecyclerViews[3]?.post {
+            updateMinimapState()
+        }
+    }
+
+    private fun updatePersistentStatusCard(progress: LoadProgress?) {
+        val cardAnalysisStatus: androidx.cardview.widget.CardView? = findViewById(R.id.card_analysis_status)
+        if (cardAnalysisStatus == null) return
+
+        if (progress == null || progress.stage == LoadStage.DONE || progress.stage == LoadStage.ERROR) {
+            cardAnalysisStatus.visibility = View.GONE
+            if (progress?.stage == LoadStage.DONE) {
+                statusBadge.text = "PARSED"
+                statusBadge.setTextColor(getColor(R.color.neon_green))
+            }
+            return
+        }
+
+        cardAnalysisStatus.visibility = View.VISIBLE
+
+        val tvLabel: TextView? = findViewById(R.id.tv_analysis_status_label)
+        val tvProgress: TextView? = findViewById(R.id.tv_analysis_status_progress)
+        val tvDetails: TextView? = findViewById(R.id.tv_analysis_status_details)
+        val pbStatus: ProgressBar? = findViewById(R.id.pb_analysis_status)
+        val btnCancelAnalysis: TextView? = findViewById(R.id.btn_cancel_analysis)
+
+        val progressFraction = when (progress.stage) {
+            LoadStage.READING_HEADER -> 0.15f
+            LoadStage.PARSING_SECTIONS -> 0.35f
+            LoadStage.EXTRACTING_SYMBOLS -> 0.50f
+            LoadStage.EXTRACTING_STRINGS -> 0.65f
+            LoadStage.INDEXING_DB -> 0.80f
+            LoadStage.MATCHING_SIGNATURES -> 0.90f
+            LoadStage.RESOLVING_DATA_XREFS -> 0.95f
+            LoadStage.DONE -> 1.0f
+            LoadStage.ERROR -> 1.0f
+        }
+
+        val percentage = (progressFraction * 100).toInt()
+        tvLabel?.text = "ANALYZING BINARY (${progress.stage.name})..."
+        tvProgress?.text = "$percentage%"
+        tvDetails?.text = "${progress.detail} (Found ${allFunctionsCached.size} symbols, ${allStringsCached.size} strings)"
+        pbStatus?.progress = percentage
+
+        btnCancelAnalysis?.setOnClickListener {
+            loadJob?.cancel()
+            cardAnalysisStatus.visibility = View.GONE
+            statusBadge.text = "CANCELLED"
+            statusBadge.setTextColor(getColor(R.color.neon_pink))
+            tvFilePath.text = "Load cancelled by user"
+            for (i in 0..3) {
+                tabProgressBars[i]?.visibility = View.GONE
+                tabEmptyStates[i]?.visibility = View.VISIBLE
+            }
+        }
+    }
+
     private fun createLoadFlow(uri: Uri, displayName: String): Flow<LoadProgress> = flow {
         emit(LoadProgress(LoadStage.READING_HEADER, 0, "Opening binary file and mapping file channel..."))
 
@@ -872,18 +984,89 @@ class MainActivity : AppCompatActivity() {
             yield()
 
             emit(LoadProgress(LoadStage.EXTRACTING_STRINGS, 0, "Scanning binary for readable ASCII strings..."))
-            val strings = parser.extractStrings(maxLimit = 50000) { bytesScanned ->
-                // Automated cancellation check inside parser loop is sufficient
+            var lastUpdateMillis = System.currentTimeMillis()
+            val stringsBufferList = mutableListOf<ElfParser.ElfString>()
+            
+            withContext(Dispatchers.Main) {
+                allStringsCached = emptyList()
+                stringsAdapter.submitList(emptyList())
+            }
+
+            val strings = parser.extractStrings(
+                maxLimit = 50000,
+                onStringFound = { elfString ->
+                    stringsBufferList.add(elfString)
+                    val now = System.currentTimeMillis()
+                    if (stringsBufferList.size >= 500 || now - lastUpdateMillis >= 500) {
+                        val batchToEmit = stringsBufferList.toList()
+                        stringsBufferList.clear()
+                        lastUpdateMillis = now
+                        runOnUiThread {
+                            allStringsCached = allStringsCached + batchToEmit
+                            stringsAdapter.submitList(allStringsCached)
+                            checkAndInitializeUiEarly(header)
+                        }
+                    }
+                }
+            )
+
+            if (stringsBufferList.isNotEmpty()) {
+                val batchToEmit = stringsBufferList.toList()
+                stringsBufferList.clear()
+                withContext(Dispatchers.Main) {
+                    allStringsCached = allStringsCached + batchToEmit
+                    stringsAdapter.submitList(allStringsCached)
+                    checkAndInitializeUiEarly(header)
+                }
             }
             allStringsCached = strings
-            emit(LoadProgress(LoadStage.EXTRACTING_STRINGS, strings.size, "Found ${strings.size} strings in binary."))
+            withContext(Dispatchers.Main) {
+                stringsAdapter.submitList(allStringsCached)
+                checkAndInitializeUiEarly(header)
+            }
             yield()
 
             emit(LoadProgress(LoadStage.EXTRACTING_SYMBOLS, 0, "Parsing symbol tables and demangling functions..."))
-            val rawSymbols = parser.parseSymbols { symbolsCount ->
-                // Process update automatically checking cancellation
+            var lastFuncUpdateMillis = System.currentTimeMillis()
+            val funcsBufferList = mutableListOf<ElfParser.ElfFunction>()
+
+            offsetsDbHelper.clearOffsets(displayName)
+
+            withContext(Dispatchers.Main) {
+                allFunctionsCached = emptyList()
+                functionsAdapter.submitList(emptyList())
             }
-            yield()
+
+            val rawSymbols = parser.parseSymbols(
+                onFunctionFound = { elfFunction ->
+                    funcsBufferList.add(elfFunction)
+                    val now = System.currentTimeMillis()
+                    if (funcsBufferList.size >= 500 || now - lastFuncUpdateMillis >= 500) {
+                        val batchToInsert = funcsBufferList.toList()
+                        funcsBufferList.clear()
+                        lastFuncUpdateMillis = now
+                        
+                        offsetsDbHelper.insertOffsetsBatch(displayName, batchToInsert, header.classType)
+                        
+                        runOnUiThread {
+                            allFunctionsCached = allFunctionsCached + batchToInsert
+                            functionsAdapter.submitList(allFunctionsCached)
+                            checkAndInitializeUiEarly(header)
+                        }
+                    }
+                }
+            )
+
+            if (funcsBufferList.isNotEmpty()) {
+                val batchToInsert = funcsBufferList.toList()
+                funcsBufferList.clear()
+                offsetsDbHelper.insertOffsetsBatch(displayName, batchToInsert, header.classType)
+                withContext(Dispatchers.Main) {
+                    allFunctionsCached = allFunctionsCached + batchToInsert
+                    functionsAdapter.submitList(allFunctionsCached)
+                    checkAndInitializeUiEarly(header)
+                }
+            }
 
             val totalSymbolsCount = rawSymbols.size
             val cappedSymbols = if (totalSymbolsCount > 200000) {
@@ -899,11 +1082,13 @@ class MainActivity : AppCompatActivity() {
                 rawSymbols
             }
             allFunctionsCached = cappedSymbols
-
-            emit(LoadProgress(LoadStage.INDEXING_DB, 0, "Saving parsed offsets and metadata into SQLite database..."))
-            offsetsDbHelper.insertOffsetsBulk(displayName, rawSymbols, header.classType) { indexCount ->
-                // Database progress
+            withContext(Dispatchers.Main) {
+                functionsAdapter.submitList(allFunctionsCached)
+                checkAndInitializeUiEarly(header)
             }
+            yield()
+
+            emit(LoadProgress(LoadStage.INDEXING_DB, allFunctionsCached.size, "Finalizing SQLite offset index..."))
             yield()
 
             emit(LoadProgress(LoadStage.MATCHING_SIGNATURES, 0, "Auto-identifying common library functions using signatures..."))
@@ -1007,27 +1192,11 @@ class MainActivity : AppCompatActivity() {
             emit(LoadProgress(LoadStage.DONE, 100, "Successfully analyzed binary!"))
 
             withContext(Dispatchers.Main) {
+                checkAndInitializeUiEarly(header)
+
                 loadingDialog?.dismiss()
                 statusBadge.text = "PARSED"
                 statusBadge.setTextColor(getColor(R.color.neon_green))
-
-                navigationController.clear()
-                disassemblyTabAdapter.setHighlightAddress(null)
-                updateNavigationButtons()
-
-                if (header.isElf) {
-                    infoPanelCard.visibility = View.VISIBLE
-                    tvElfClass.text = header.classType
-                    tvElfMachine.text = header.machine
-                    tvElfEntry.text = header.entryPoint
-                    tvElfEndian.text = header.endianType
-                } else {
-                    infoPanelCard.visibility = View.VISIBLE
-                    tvElfClass.text = "RAW DATA (Non-ELF)"
-                    tvElfMachine.text = "N/A"
-                    tvElfEntry.text = "0x0"
-                    tvElfEndian.text = "System Default"
-                }
 
                 stringsAdapter.submitList(allStringsCached)
                 functionsAdapter.submitList(allFunctionsCached)

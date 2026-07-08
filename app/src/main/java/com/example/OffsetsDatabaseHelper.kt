@@ -90,6 +90,57 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         onCreate(db)
     }
 
+    interface DatabaseObserver {
+        fun onOffsetsInserted(fileIdentifier: String, functions: List<ElfParser.ElfFunction>)
+    }
+
+    private val observers = mutableListOf<DatabaseObserver>()
+
+    fun registerObserver(observer: DatabaseObserver) {
+        synchronized(observers) {
+            observers.add(observer)
+        }
+    }
+
+    fun unregisterObserver(observer: DatabaseObserver) {
+        synchronized(observers) {
+            observers.remove(observer)
+        }
+    }
+
+    private fun notifyOffsetsInserted(fileIdentifier: String, functions: List<ElfParser.ElfFunction>) {
+        synchronized(observers) {
+            observers.forEach { it.onOffsetsInserted(fileIdentifier, functions) }
+        }
+    }
+
+    fun clearOffsets(fileIdentifier: String) {
+        val db = writableDatabase
+        db.delete(TABLE_OFFSETS, "$COLUMN_FILE_IDENTIFIER = ?", arrayOf(fileIdentifier))
+    }
+
+    fun insertOffsetsBatch(fileIdentifier: String, functions: List<ElfParser.ElfFunction>, archType: String) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val query = "INSERT INTO $TABLE_OFFSETS ($COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_FILE_IDENTIFIER) VALUES (?, ?, ?, ?)"
+            val statement = db.compileStatement(query)
+            
+            for (func in functions) {
+                statement.clearBindings()
+                statement.bindString(1, func.address)
+                statement.bindString(2, func.name)
+                statement.bindString(3, archType)
+                statement.bindString(4, fileIdentifier)
+                statement.executeInsert()
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        notifyOffsetsInserted(fileIdentifier, functions)
+    }
+
     fun insertOffsetsBulk(fileIdentifier: String, functions: List<ElfParser.ElfFunction>, archType: String, onProgress: ((Int) -> Unit)? = null) {
         val db = writableDatabase
         db.beginTransaction()
@@ -115,6 +166,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         } finally {
             db.endTransaction()
         }
+        notifyOffsetsInserted(fileIdentifier, functions)
     }
 
     fun searchOffsetsPaginated(searchQuery: String?, fileIdentifier: String?, limit: Int, offset: Int): List<ElfParser.ElfFunction> {

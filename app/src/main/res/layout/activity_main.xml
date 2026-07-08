@@ -239,6 +239,87 @@
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 
+            <!-- Persistent live-status bar/chip (updates in background during streaming analysis) -->
+            <androidx.cardview.widget.CardView
+                android:id="@+id/card_analysis_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:visibility="gone"
+                app:cardBackgroundColor="@color/dark_surface"
+                app:cardCornerRadius="8dp"
+                app:cardElevation="2dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <RelativeLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+
+                        <TextView
+                            android:id="@+id/tv_analysis_status_label"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="monospace"
+                            android:text="ANALYZING BINARY (STREAMING)..."
+                            android:textColor="@color/neon_green"
+                            android:textSize="10sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tv_analysis_status_progress"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_alignParentEnd="true"
+                            android:fontFamily="monospace"
+                            android:text="0%"
+                            android:textColor="@color/neon_cyan"
+                            android:textSize="10sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/btn_cancel_analysis"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_toStartOf="@id/tv_analysis_status_progress"
+                            android:layout_marginEnd="12dp"
+                            android:text="[CANCEL]"
+                            android:textColor="@color/neon_pink"
+                            android:textSize="10sp"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:clickable="true"
+                            android:focusable="true" />
+                    </RelativeLayout>
+
+                    <TextView
+                        android:id="@+id/tv_analysis_status_details"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="Initializing background streaming analysis..."
+                        android:textColor="@color/text_secondary"
+                        android:textSize="10sp"
+                        android:fontFamily="monospace" />
+
+                    <ProgressBar
+                        android:id="@+id/pb_analysis_status"
+                        style="@android:style/Widget.ProgressBar.Horizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="4dp"
+                        android:layout_marginTop="8dp"
+                        android:indeterminate="false"
+                        android:progressTint="@color/neon_green"
+                        android:progressBackgroundTint="@color/dark_bg" />
+                </LinearLayout>
+            </androidx.cardview.widget.CardView>
+
             <!-- Metadata Info Panel (Expanded dynamically) -->
             <androidx.cardview.widget.CardView
                 android:id="@+id/info_panel_card"

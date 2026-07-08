@@ -399,7 +399,11 @@ class ElfParser(private val buffer: ByteBuffer) {
     /**
      * Extracts printable ASCII strings of length >= 4 with a max limit of 50,000 strings
      */
-    fun extractStrings(maxLimit: Int = 50000, onProgress: ((Int) -> Unit)? = null): List<ElfString> {
+    fun extractStrings(
+        maxLimit: Int = 50000,
+        onStringFound: ((ElfString) -> Unit)? = null,
+        onProgress: ((Int) -> Unit)? = null
+    ): List<ElfString> {
         val stringsList = mutableListOf<ElfString>()
         var start = -1
         val size = buffer.capacity()
@@ -428,7 +432,9 @@ class ElfParser(private val buffer: ByteBuffer) {
                             dup.get(bytesArray)
                             val str = String(bytesArray, Charsets.US_ASCII)
                             val offsetStr = "0x" + java.lang.Integer.toHexString(start).uppercase()
-                            stringsList.add(ElfString(offsetStr, str, length))
+                            val elfString = ElfString(offsetStr, str, length)
+                            stringsList.add(elfString)
+                            onStringFound?.invoke(elfString)
                         }
                     }
                     start = -1
@@ -448,7 +454,9 @@ class ElfParser(private val buffer: ByteBuffer) {
                     dup.get(bytesArray)
                     val str = String(bytesArray, Charsets.US_ASCII)
                     val offsetStr = "0x" + java.lang.Integer.toHexString(start).uppercase()
-                    stringsList.add(ElfString(offsetStr, str, length))
+                    val elfString = ElfString(offsetStr, str, length)
+                    stringsList.add(elfString)
+                    onStringFound?.invoke(elfString)
                 }
             }
         }
@@ -469,7 +477,10 @@ class ElfParser(private val buffer: ByteBuffer) {
     /**
      * Parses ELF symbols (Functions) if present, or provides mock ones if none are found.
      */
-    fun parseSymbols(onProgress: ((Int) -> Unit)? = null): List<ElfFunction> {
+    fun parseSymbols(
+        onFunctionFound: ((ElfFunction) -> Unit)? = null,
+        onProgress: ((Int) -> Unit)? = null
+    ): List<ElfFunction> {
         val functions = mutableListOf<ElfFunction>()
         val header = parseHeader()
         if (!header.isElf) return emptyList()
@@ -650,16 +661,16 @@ class ElfParser(private val buffer: ByteBuffer) {
                                 else -> "OTHER"
                             }
 
-                            functions.add(
-                                ElfFunction(
-                                    address = "0x" + java.lang.Long.toHexString(st_value).uppercase(),
-                                    name = demangle(name),
-                                    size = "$st_size bytes",
-                                    bind = bindStr,
-                                    type = typeStr,
-                                    index = i
-                                )
+                            val elfFunction = ElfFunction(
+                                address = "0x" + java.lang.Long.toHexString(st_value).uppercase(),
+                                name = demangle(name),
+                                size = "$st_size bytes",
+                                bind = bindStr,
+                                type = typeStr,
+                                index = i
                             )
+                            functions.add(elfFunction)
+                            onFunctionFound?.invoke(elfFunction)
                         }
                     } catch (e: Exception) {
                         // Skip corrupted/malformed symbol entry, but continue loop
@@ -673,7 +684,9 @@ class ElfParser(private val buffer: ByteBuffer) {
 
         // If no functions parsed, generate fallback helper lists for demonstration
         if (functions.isEmpty()) {
-            functions.addAll(generateMockSymbols())
+            val mockSymbols = generateMockSymbols()
+            functions.addAll(mockSymbols)
+            mockSymbols.forEach { onFunctionFound?.invoke(it) }
         }
 
         return functions
