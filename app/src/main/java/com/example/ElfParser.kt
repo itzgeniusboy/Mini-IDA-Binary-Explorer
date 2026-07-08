@@ -60,6 +60,15 @@ class ElfParser(private val buffer: ByteBuffer) {
                 e.printStackTrace()
             }
         }
+
+        fun demangleName(mangled: String): String {
+            return try {
+                val dummy = ElfParser(ByteBuffer.allocate(0))
+                dummy.demangle(mangled)
+            } catch (e: Exception) {
+                mangled
+            }
+        }
     }
 
     private external fun demangleNative(mangled: String): String
@@ -582,7 +591,7 @@ class ElfParser(private val buffer: ByteBuffer) {
     /**
      * Highly robust C++ demangler calling our standard native Itanium __cxa_demangle
      */
-    private fun demangle(mangled: String): String {
+    fun demangle(mangled: String): String {
         if (!mangled.startsWith("_Z")) return mangled
         return try {
             demangleNative(mangled)

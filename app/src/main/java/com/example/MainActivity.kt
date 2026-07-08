@@ -42,6 +42,17 @@ class MainActivity : AppCompatActivity() {
     private var allHexCached: List<ElfParser.HexRow> = emptyList()
     private var allDisassemblyCached: List<DisassemblyLine> = emptyList()
 
+    private var exportFormatSelected: ExportFormat = ExportFormat.JSON
+    private var exportSectionsSelected: Set<ExportSection> = emptySet()
+
+    private val createDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            performExport(uri)
+        }
+    }
+
     // Adapters
     private lateinit var functionsAdapter: FunctionsAdapter
     private val stringsAdapter = StringsAdapter()
@@ -76,7 +87,7 @@ class MainActivity : AppCompatActivity() {
             }
         },
         onItemLongClick = { line ->
-            showXrefDialog(line.address, "0x" + line.address.toString(16).uppercase())
+            showAnnotationDialog(line.address, "0x" + line.address.toString(16).uppercase())
             true
         }
     )
@@ -120,17 +131,32 @@ class MainActivity : AppCompatActivity() {
 
         // Initialize adapters & db
         offsetsDbHelper = OffsetsDatabaseHelper(this)
-        functionsAdapter = FunctionsAdapter { selectedFunction ->
-            lastSelectedFunction = selectedFunction
-            val addrHex = selectedFunction.address.removePrefix("0x")
-            val addressLong = addrHex.toLongOrNull(16)
-            if (addressLong != null) {
-                showXrefDialog(addressLong, selectedFunction.name)
+        functionsAdapter = FunctionsAdapter(
+            onItemClick = { selectedFunction ->
+                lastSelectedFunction = selectedFunction
+                val addrHex = selectedFunction.address.removePrefix("0x")
+                val addressLong = addrHex.toLongOrNull(16)
+                if (addressLong != null) {
+                    showXrefDialog(addressLong, selectedFunction.name)
+                }
+            },
+            onItemLongClick = { selectedFunction ->
+                val addrHex = selectedFunction.address.removePrefix("0x")
+                val addressLong = addrHex.toLongOrNull(16)
+                if (addressLong != null) {
+                    showAnnotationDialog(addressLong, selectedFunction.name)
+                }
+                true
             }
-        }
+        )
 
         // Initialize layout based on initial orientation
         initLayout()
+
+        // Auto-clean extracted libs older than 7 days
+        lifecycleScope.launch(Dispatchers.IO) {
+            ApkInspector.clearCache(this@MainActivity, maxAgeDays = 7)
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -273,10 +299,81 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleSelectedFile(uri: Uri) {
+        val displayName = getUriDisplayName(uri)
+        val mimeType = contentResolver.getType(uri)
+        val isApk = displayName.endsWith(".apk", ignoreCase = true) || 
+                    mimeType == "application/vnd.android.package-archive"
+
+        if (isApk) {
+            processApkFile(uri, displayName)
+        } else {
+            loadElfFile(uri, displayName)
+        }
+    }
+
+    private fun processApkFile(uri: Uri, displayName: String) {
+        statusBadge.text = "INSPECTING..."
+        statusBadge.setTextColor(getColor(R.color.neon_pink))
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val fileId = ApkInspector.getApkFileId(this@MainActivity, uri)
+            val result = ApkInspector.inspectApk(this@MainActivity, uri)
+
+            withContext(Dispatchers.Main) {
+                if (!result.isValidApk) {
+                    statusBadge.text = "ERR_APK"
+                    statusBadge.setTextColor(getColor(R.color.neon_pink))
+                    tvFilePath.text = result.errorMessage ?: "Invalid APK file."
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        result.errorMessage ?: "Invalid APK file",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return@withContext
+                }
+
+                if (result.nativeLibs.isEmpty()) {
+                    statusBadge.text = "NO_LIBS"
+                    statusBadge.setTextColor(getColor(R.color.neon_pink))
+                    tvFilePath.text = "No native libraries (.so) found in APK"
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "No native (.so) libraries found in this APK.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return@withContext
+                }
+
+                // Show the Jetpack Compose dialog picker
+                ApkLibraryPicker.show(
+                    context = this@MainActivity,
+                    apkUri = uri,
+                    fileId = fileId,
+                    nativeLibs = result.nativeLibs,
+                    onLibraryExtracted = { extractedFile, customDisplayName ->
+                        val fileUri = Uri.fromFile(extractedFile)
+                        loadElfFile(fileUri, customDisplayName)
+                    },
+                    onDismiss = {
+                        if (binaryBuffer == null) {
+                            statusBadge.text = "IDLE"
+                            statusBadge.setTextColor(getColor(R.color.neon_green))
+                            tvFilePath.text = "No file loaded"
+                        } else {
+                            statusBadge.text = "PARSED"
+                            statusBadge.setTextColor(getColor(R.color.neon_green))
+                            tvFilePath.text = currentFileName
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private fun loadElfFile(uri: Uri, displayName: String) {
         statusBadge.text = "LOADING..."
         statusBadge.setTextColor(getColor(R.color.neon_pink))
 
-        val displayName = getUriDisplayName(uri)
         currentFileName = displayName
         tvFilePath.text = displayName
 
@@ -320,6 +417,10 @@ class MainActivity : AppCompatActivity() {
                     allDisassemblyCached = disassemblyList
 
                     offsetsDbHelper.insertOffsetsBulk(displayName, functions, header.classType)
+
+                    // Load annotations & set function list for display-name resolution
+                    AnnotationRepository.loadAnnotations(this@MainActivity, displayName)
+                    AnnotationRepository.setFunctions(functions)
 
                     if (disassemblyList.size > 5000) {
                         withContext(Dispatchers.Main) {
@@ -542,8 +643,8 @@ class MainActivity : AppCompatActivity() {
                         val tvRefText: TextView = itemView.findViewById(R.id.tv_xref_text)
                         val fromHex = "0x" + ref.fromAddr.toString(16).uppercase()
                         
-                        val symbol = allFunctionsCached.find { it.address.removePrefix("0x").toLongOrNull(16) == ref.fromAddr }
-                        val label = if (symbol != null) "$fromHex (${symbol.name})" else fromHex
+                        val resolvedName = AnnotationRepository.resolveAddressName(ref.fromAddr)
+                        val label = "$fromHex ($resolvedName)"
                         tvRefText.text = "← $label"
                         
                         itemView.setOnClickListener {
@@ -569,8 +670,8 @@ class MainActivity : AppCompatActivity() {
                         val tvRefText: TextView = itemView.findViewById(R.id.tv_xref_text)
                         val toHex = "0x" + ref.toAddr.toString(16).uppercase()
 
-                        val symbol = allFunctionsCached.find { it.address.removePrefix("0x").toLongOrNull(16) == ref.toAddr }
-                        val label = if (symbol != null) "$toHex (${symbol.name})" else toHex
+                        val resolvedName = AnnotationRepository.resolveAddressName(ref.toAddr)
+                        val label = "$toHex ($resolvedName)"
                         tvRefText.text = "→ $label"
 
                         itemView.setOnClickListener {
@@ -708,6 +809,332 @@ class MainActivity : AppCompatActivity() {
             val recyclerView = tabRecyclerViews[0]
             val layoutManager = recyclerView?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
             layoutManager?.scrollToPositionWithOffset(index, 0)
+        }
+    }
+
+    private fun showAnnotationDialog(address: Long, defaultName: String) {
+        val annotation = AnnotationRepository.getAnnotation(address)
+        val currentCustomName = annotation?.customName ?: ""
+        val currentComment = annotation?.comment ?: ""
+
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_annotation, null)
+        val tvTitle: TextView = dialogView.findViewById(R.id.tv_dialog_title)
+        val etRename: EditText = dialogView.findViewById(R.id.et_rename)
+        val etComment: EditText = dialogView.findViewById(R.id.et_comment)
+        val btnXrefs: android.widget.Button = dialogView.findViewById(R.id.btn_xrefs)
+        val btnCancel: android.widget.Button = dialogView.findViewById(R.id.btn_cancel)
+        val btnSave: android.widget.Button = dialogView.findViewById(R.id.btn_save)
+
+        tvTitle.text = "ANNOTATE ADDRESS: 0x${address.toString(16).uppercase()}"
+        etRename.setText(currentCustomName.ifEmpty { defaultName })
+        etComment.setText(currentComment)
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        btnXrefs.setOnClickListener {
+            dialog.dismiss()
+            showXrefDialog(address, defaultName)
+        }
+
+        btnCancel.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        btnSave.setOnClickListener {
+            val customName = etRename.text.toString().trim()
+            val comment = etComment.text.toString().trim()
+
+            val savedName = if (customName.isNotEmpty() && customName != defaultName) customName else null
+            val savedComment = if (comment.isNotEmpty()) comment else null
+
+            if (savedName == null && savedComment == null) {
+                AnnotationRepository.deleteAnnotation(this, currentFileName, address)
+            } else {
+                AnnotationRepository.upsertAnnotation(this, currentFileName, address, savedName, savedComment)
+            }
+
+            dialog.dismiss()
+            refreshVisibleAdapters()
+        }
+
+        dialog.show()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+    }
+
+    private fun refreshVisibleAdapters() {
+        functionsAdapter.notifyDataSetChanged()
+        disassemblyTabAdapter.notifyDataSetChanged()
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu?): Boolean {
+        menu?.add(0, 102, 0, "Export Analysis Report")?.apply {
+            setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            setIcon(android.R.drawable.ic_menu_share)
+        }
+        menu?.add(0, 101, 1, "Clear Extracted Cache")?.apply {
+            setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
+        }
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == 101) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                ApkInspector.clearCache(this@MainActivity, maxAgeDays = 0)
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(this@MainActivity, "Extracted libraries cache cleared", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            return true
+        }
+        if (item.itemId == 102) {
+            showExportDialog()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    private fun showExportDialog() {
+        if (binaryBuffer == null || currentFileName.isEmpty()) {
+            android.widget.Toast.makeText(this, "Please load a binary first before exporting!", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val context = this
+        val container = android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(getColor(R.color.dark_surface))
+        }
+
+        val tvDesc = TextView(context).apply {
+            text = "Select format and sections to generate a detailed static analysis report. Note that disassembly is generated on-the-fly and can be extremely large."
+            setTextColor(getColor(R.color.text_secondary))
+            textSize = 14f
+            setPadding(0, 0, 0, (16 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(tvDesc)
+
+        val tvFormatTitle = TextView(context).apply {
+            text = "EXPORT FORMAT"
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            textSize = 13f
+            setTextColor(getColor(R.color.neon_pink))
+            setPadding(0, 0, 0, (6 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(tvFormatTitle)
+
+        val rgFormat = android.widget.RadioGroup(context).apply {
+            orientation = android.widget.RadioGroup.HORIZONTAL
+            setPadding(0, 0, 0, (18 * resources.displayMetrics.density).toInt())
+        }
+        val rbJson = android.widget.RadioButton(context).apply {
+            text = "JSON Format"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_pink))
+            id = View.generateViewId()
+            isChecked = true
+        }
+        val rbText = android.widget.RadioButton(context).apply {
+            text = "IDA Plain Text"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_pink))
+            id = View.generateViewId()
+        }
+        rgFormat.addView(rbJson)
+        rgFormat.addView(rbText)
+        container.addView(rgFormat)
+
+        val tvSectionsTitle = TextView(context).apply {
+            text = "REPORT SECTIONS"
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            textSize = 13f
+            setTextColor(getColor(R.color.neon_pink))
+            setPadding(0, 0, 0, (6 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(tvSectionsTitle)
+
+        val cbHeader = android.widget.CheckBox(context).apply {
+            text = "Header Information"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            isChecked = true
+        }
+        val cbSymbols = android.widget.CheckBox(context).apply {
+            text = "Symbols / Function Table"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            isChecked = true
+        }
+        val cbStrings = android.widget.CheckBox(context).apply {
+            text = "Printable Strings"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            isChecked = true
+        }
+        val cbXrefs = android.widget.CheckBox(context).apply {
+            text = "Cross-References (XREFs)"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            isChecked = true
+        }
+        val cbAnnotations = android.widget.CheckBox(context).apply {
+            text = "Annotations & Comments"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            isChecked = true
+        }
+        val cbDisassembly = android.widget.CheckBox(context).apply {
+            text = "Full Disassembly (.text)"
+            setTextColor(getColor(R.color.text_primary))
+            buttonTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            isChecked = false
+        }
+
+        container.addView(cbHeader)
+        container.addView(cbSymbols)
+        container.addView(cbStrings)
+        container.addView(cbXrefs)
+        container.addView(cbAnnotations)
+        container.addView(cbDisassembly)
+
+        val tvWarning = TextView(context).apply {
+            text = "⚠️ Warning: Generating full disassembly for large binaries (up to 300MB) can take a while and produce very large files."
+            setTextColor(getColor(R.color.neon_pink))
+            textSize = 12f
+            visibility = View.GONE
+            setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
+        container.addView(tvWarning)
+
+        cbDisassembly.setOnCheckedChangeListener { _, isChecked ->
+            tvWarning.visibility = if (isChecked) View.VISIBLE else View.GONE
+        }
+
+        val scrollView = android.widget.ScrollView(context).apply {
+            addView(container)
+        }
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(context)
+            .setTitle("EXPORT ANALYSIS REPORT")
+            .setView(scrollView)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Export") { _, _ ->
+                exportFormatSelected = if (rbJson.isChecked) ExportFormat.JSON else ExportFormat.TEXT
+                
+                val sections = mutableSetOf<ExportSection>()
+                if (cbHeader.isChecked) sections.add(ExportSection.HEADER)
+                if (cbSymbols.isChecked) sections.add(ExportSection.SYMBOLS)
+                if (cbStrings.isChecked) sections.add(ExportSection.STRINGS)
+                if (cbXrefs.isChecked) sections.add(ExportSection.XREFS)
+                if (cbAnnotations.isChecked) sections.add(ExportSection.ANNOTATIONS)
+                if (cbDisassembly.isChecked) sections.add(ExportSection.DISASSEMBLY)
+
+                exportSectionsSelected = sections
+
+                val defaultName = if (exportFormatSelected == ExportFormat.JSON) {
+                    "${currentFileName.substringBeforeLast(".")}_analysis.json"
+                } else {
+                    "${currentFileName.substringBeforeLast(".")}_analysis.txt"
+                }
+                createDocumentLauncher.launch(defaultName)
+            }
+            .create()
+
+        dialog.show()
+    }
+
+    private fun performExport(uri: Uri) {
+        val progressView = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(getColor(R.color.dark_surface))
+        }
+        val tvProgressSection = TextView(this).apply {
+            text = "Starting report export..."
+            textSize = 15f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(getColor(R.color.text_primary))
+            setPadding(0, 0, 0, (8 * resources.displayMetrics.density).toInt())
+        }
+        val tvProgressDetails = TextView(this).apply {
+            text = "Preparing buffers..."
+            textSize = 13f
+            setTextColor(getColor(R.color.text_secondary))
+            setPadding(0, 0, 0, (12 * resources.displayMetrics.density).toInt())
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            max = 100
+        }
+        progressView.addView(tvProgressSection)
+        progressView.addView(tvProgressDetails)
+        progressView.addView(progressBar)
+
+        var exportJob: kotlinx.coroutines.Job? = null
+
+        val progressDialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Exporting Analysis")
+            .setView(progressView)
+            .setCancelable(false)
+            .setNegativeButton("Cancel") { _, _ ->
+                exportJob?.cancel()
+            }
+            .create()
+
+        progressDialog.show()
+
+        lifecycleScope.launch(Dispatchers.Main) {
+            exportJob = coroutineContext[kotlinx.coroutines.Job]
+            
+            val result = ExportManager.exportReport(
+                fileId = currentFileName,
+                context = this@MainActivity,
+                format = exportFormatSelected,
+                sections = exportSectionsSelected,
+                outputUri = uri,
+                binaryBuffer = binaryBuffer,
+                elfHeader = elfHeaderCached,
+                onProgress = { progress ->
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        val sectionName = when (progress.section) {
+                            ExportSection.HEADER -> "ELF Header"
+                            ExportSection.SYMBOLS -> "Symbols Table"
+                            ExportSection.STRINGS -> "Printable Strings"
+                            ExportSection.XREFS -> "Cross-References (XREFs)"
+                            ExportSection.ANNOTATIONS -> "Annotations & Comments"
+                            ExportSection.DISASSEMBLY -> "Disassembly"
+                        }
+                        tvProgressSection.text = "Exporting: $sectionName"
+                        if (progress.estimatedTotal != null && progress.estimatedTotal > 0) {
+                            progressBar.isIndeterminate = false
+                            progressBar.max = progress.estimatedTotal
+                            progressBar.progress = progress.itemsWritten
+                            val pct = (progress.itemsWritten * 100) / progress.estimatedTotal
+                            tvProgressDetails.text = "Written ${progress.itemsWritten} of ${progress.estimatedTotal} items ($pct%)"
+                        } else {
+                            progressBar.isIndeterminate = true
+                            tvProgressDetails.text = "Written ${progress.itemsWritten} items (streaming...)"
+                        }
+                    }
+                }
+            )
+
+            progressDialog.dismiss()
+
+            result.onSuccess {
+                android.widget.Toast.makeText(this@MainActivity, "Report successfully exported!", android.widget.Toast.LENGTH_LONG).show()
+            }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) {
+                    android.widget.Toast.makeText(this@MainActivity, "Export cancelled.", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    android.widget.Toast.makeText(this@MainActivity, "Export failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 }

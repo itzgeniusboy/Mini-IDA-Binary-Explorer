@@ -9,7 +9,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
     companion object {
         const val DATABASE_NAME = "offsets.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 4
 
         const val TABLE_OFFSETS = "offsets"
         const val COLUMN_ID = "id"
@@ -49,11 +49,28 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         db.execSQL("CREATE INDEX idx_xrefs_file_id ON xrefs (file_id)")
         db.execSQL("CREATE INDEX idx_xrefs_from ON xrefs (from_addr)")
         db.execSQL("CREATE INDEX idx_xrefs_to ON xrefs (to_addr)")
+
+        // Add annotations table
+        val createAnnotationsTableQuery = """
+            CREATE TABLE annotations (
+                file_id TEXT,
+                address INTEGER,
+                custom_name TEXT,
+                comment TEXT,
+                updated_at INTEGER,
+                PRIMARY KEY(file_id, address)
+            )
+        """.trimIndent()
+        db.execSQL(createAnnotationsTableQuery)
+
+        db.execSQL("CREATE INDEX idx_annotations_file_id ON annotations (file_id)")
+        db.execSQL("CREATE INDEX idx_annotations_address ON annotations (address)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS $TABLE_OFFSETS")
         db.execSQL("DROP TABLE IF EXISTS xrefs")
+        db.execSQL("DROP TABLE IF EXISTS annotations")
         onCreate(db)
     }
 
@@ -206,5 +223,95 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
             }
         }
         return list
+    }
+
+    fun upsertAnnotation(fileId: String, address: Long, customName: String?, comment: String?) {
+        val db = writableDatabase
+        val query = """
+            INSERT OR REPLACE INTO annotations (file_id, address, custom_name, comment, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """.trimIndent()
+        val statement = db.compileStatement(query)
+        statement.clearBindings()
+        statement.bindString(1, fileId)
+        statement.bindLong(2, address)
+        if (customName != null) {
+            statement.bindString(3, customName)
+        } else {
+            statement.bindNull(3)
+        }
+        if (comment != null) {
+            statement.bindString(4, comment)
+        } else {
+            statement.bindNull(4)
+        }
+        statement.bindLong(5, System.currentTimeMillis())
+        statement.executeInsert()
+    }
+
+    fun getAnnotation(fileId: String, address: Long): AnnotationEntry? {
+        val db = readableDatabase
+        val query = "SELECT custom_name, comment, updated_at FROM annotations WHERE file_id = ? AND address = ?"
+        val cursor = db.rawQuery(query, arrayOf(fileId, address.toString()))
+        cursor.use {
+            if (cursor.moveToFirst()) {
+                val nameIdx = cursor.getColumnIndex("custom_name")
+                val commentIdx = cursor.getColumnIndex("comment")
+                val updatedIdx = cursor.getColumnIndex("updated_at")
+
+                val customName = if (nameIdx != -1 && !cursor.isNull(nameIdx)) cursor.getString(nameIdx) else null
+                val comment = if (commentIdx != -1 && !cursor.isNull(commentIdx)) cursor.getString(commentIdx) else null
+                val updatedAt = if (updatedIdx != -1) cursor.getLong(updatedIdx) else 0L
+                return AnnotationEntry(address, customName, comment, updatedAt)
+            }
+        }
+        return null
+    }
+
+    fun getAllAnnotations(fileId: String): Map<Long, AnnotationEntry> {
+        val db = readableDatabase
+        val map = mutableMapOf<Long, AnnotationEntry>()
+        val query = "SELECT address, custom_name, comment, updated_at FROM annotations WHERE file_id = ?"
+        val cursor = db.rawQuery(query, arrayOf(fileId))
+        cursor.use {
+            val addrIdx = cursor.getColumnIndex("address")
+            val nameIdx = cursor.getColumnIndex("custom_name")
+            val commentIdx = cursor.getColumnIndex("comment")
+            val updatedIdx = cursor.getColumnIndex("updated_at")
+
+            while (cursor.moveToNext()) {
+                val address = if (addrIdx != -1) cursor.getLong(addrIdx) else 0L
+                val customName = if (nameIdx != -1 && !cursor.isNull(nameIdx)) cursor.getString(nameIdx) else null
+                val comment = if (commentIdx != -1 && !cursor.isNull(commentIdx)) cursor.getString(commentIdx) else null
+                val updatedAt = if (updatedIdx != -1) cursor.getLong(updatedIdx) else 0L
+                map[address] = AnnotationEntry(address, customName, comment, updatedAt)
+            }
+        }
+        return map
+    }
+
+    fun deleteAnnotation(fileId: String, address: Long) {
+        val db = writableDatabase
+        db.delete("annotations", "file_id = ? AND address = ?", arrayOf(fileId, address.toString()))
+    }
+
+    // --- STREAMING CURSOR METHODS FOR EXPORT ---
+
+    fun getSymbolsCursor(fileId: String): Cursor {
+        val db = readableDatabase
+        val query = "SELECT $COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME FROM $TABLE_OFFSETS WHERE $COLUMN_FILE_IDENTIFIER = ? ORDER BY $COLUMN_ID ASC"
+        return db.rawQuery(query, arrayOf(fileId))
+    }
+
+    fun getXrefsCursor(fileId: String): Cursor {
+        val db = readableDatabase
+        val query = "SELECT from_addr, to_addr, xref_type FROM xrefs WHERE file_id = ?"
+        return db.rawQuery(query, arrayOf(fileId))
+    }
+
+    fun getAnnotationsCursor(fileId: String): Cursor {
+        val db = readableDatabase
+        val query = "SELECT address, custom_name, comment, updated_at FROM annotations WHERE file_id = ?"
+        return db.rawQuery(query, arrayOf(fileId))
     }
 }

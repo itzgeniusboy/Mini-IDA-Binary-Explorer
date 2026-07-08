@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@color/dark_surface"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/tv_dialog_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="ANNOTATE ADDRESS"
+        android:textColor="@color/neon_green"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:gravity="center_horizontal"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="RENAME / CUSTOM NAME"
+        android:textColor="#5A6075"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/et_rename"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="@color/dark_bg"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:padding="12dp"
+        android:singleLine="true"
+        android:fontFamily="sans-serif-monospace"
+        android:textCursorDrawable="@null"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="COMMENT"
+        android:textColor="#5A6075"
+        android:textSize="11sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/et_comment"
+        android:layout_width="match_parent"
+        android:layout_height="100dp"
+        android:background="@color/dark_bg"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:padding="12dp"
+        android:gravity="top|start"
+        android:inputType="textMultiLine"
+        android:fontFamily="sans-serif-monospace"
+        android:textCursorDrawable="@null"
+        android:layout_marginBottom="16dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <Button
+            android:id="@+id/btn_xrefs"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="XREFS"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:textColor="@color/neon_cyan" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/btn_cancel"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CANCEL"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:textColor="#94A3B8"
+            android:layout_marginEnd="8dp" />
+
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="SAVE"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:textColor="#000000"
+            android:backgroundTint="@color/neon_green" />
+    </LinearLayout>
+</LinearLayout>

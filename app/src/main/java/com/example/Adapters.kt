@@ -42,7 +42,10 @@ class StringsAdapter : ListAdapter<ElfParser.ElfString, StringsAdapter.ViewHolde
 
 // --- FUNCTIONS ADAPTER ---
 
-class FunctionsAdapter(private val onItemClick: ((ElfParser.ElfFunction) -> Unit)? = null) : ListAdapter<ElfParser.ElfFunction, FunctionsAdapter.ViewHolder>(DiffCallback) {
+class FunctionsAdapter(
+    private val onItemClick: ((ElfParser.ElfFunction) -> Unit)? = null,
+    private val onItemLongClick: ((ElfParser.ElfFunction) -> Boolean)? = null
+) : ListAdapter<ElfParser.ElfFunction, FunctionsAdapter.ViewHolder>(DiffCallback) {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val tvAddress: TextView = view.findViewById(R.id.tv_func_address)
@@ -50,6 +53,7 @@ class FunctionsAdapter(private val onItemClick: ((ElfParser.ElfFunction) -> Unit
         val tvName: TextView = view.findViewById(R.id.tv_func_name)
         val tvSize: TextView = view.findViewById(R.id.tv_func_size)
         val tvIndex: TextView = view.findViewById(R.id.tv_func_index)
+        val tvCommentIndicator: TextView = view.findViewById(R.id.tv_func_comment_indicator)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -61,18 +65,33 @@ class FunctionsAdapter(private val onItemClick: ((ElfParser.ElfFunction) -> Unit
         val item = getItem(position)
         holder.tvAddress.text = item.address
         holder.tvMeta.text = "${item.type} [${item.bind}]"
-        holder.tvName.text = item.name
+        
+        val cleanAddr = item.address.removePrefix("0x")
+        val addressLong = cleanAddr.toLongOrNull(16) ?: 0L
+        
+        holder.tvName.text = AnnotationRepository.resolveName(addressLong, item.name)
+        
+        val annotation = AnnotationRepository.getAnnotation(addressLong)
+        if (annotation != null && !annotation.comment.isNullOrBlank()) {
+            holder.tvCommentIndicator.visibility = View.VISIBLE
+        } else {
+            holder.tvCommentIndicator.visibility = View.GONE
+        }
+        
         holder.tvSize.text = "SIZE: ${item.size}"
         holder.tvIndex.text = "SYM #${item.index}"
         
         holder.itemView.setOnClickListener {
             onItemClick?.invoke(item)
         }
+        holder.itemView.setOnLongClickListener {
+            onItemLongClick?.invoke(item) ?: false
+        }
     }
 
     companion object DiffCallback : DiffUtil.ItemCallback<ElfParser.ElfFunction>() {
         override fun areItemsTheSame(oldItem: ElfParser.ElfFunction, newItem: ElfParser.ElfFunction): Boolean {
-            return oldItem.address == newItem.address && oldItem.name == newItem.name
+            return oldItem.address == newItem.address
         }
         override fun areContentsTheSame(oldItem: ElfParser.ElfFunction, newItem: ElfParser.ElfFunction): Boolean {
             return oldItem == newItem
@@ -181,6 +200,7 @@ class DisassemblyTabAdapter(
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val tvLineText: TextView = view.findViewById(R.id.tv_line_text)
+        val tvCommentText: TextView = view.findViewById(R.id.tv_comment_text)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -190,9 +210,31 @@ class DisassemblyTabAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = getItem(position)
+        
+        val resolvedLabel = AnnotationRepository.resolveAddressName(item.address)
         val addrStr = "0x" + item.address.toString(16).uppercase().padStart(8, '0')
-        val formatted = "$addrStr:  ${item.bytesHex.padEnd(16)}  ${item.mnemonic.padEnd(8)} ${item.opStr}"
+        val formatted = if (resolvedLabel != "sub_${item.address.toString(16).uppercase()}") {
+            "$addrStr <$resolvedLabel>:  ${item.bytesHex.padEnd(16)}  ${item.mnemonic.padEnd(8)} ${item.opStr}"
+        } else {
+            "$addrStr:  ${item.bytesHex.padEnd(16)}  ${item.mnemonic.padEnd(8)} ${item.opStr}"
+        }
         holder.tvLineText.text = formatted
+
+        // Handle inline comments
+        val annotation = AnnotationRepository.getAnnotation(item.address)
+        if (annotation != null && !annotation.comment.isNullOrBlank()) {
+            holder.tvCommentText.text = "; ${annotation.comment}"
+            holder.tvCommentText.visibility = View.VISIBLE
+        } else {
+            val targetAddr = XrefAnalyzer.extractTargetAddress(item.opStr)
+            val resolvedTarget = if (targetAddr != null) AnnotationRepository.resolveAddressName(targetAddr) else null
+            if (targetAddr != null && resolvedTarget != null && resolvedTarget != "sub_${targetAddr.toString(16).uppercase()}") {
+                holder.tvCommentText.text = "; $resolvedTarget"
+                holder.tvCommentText.visibility = View.VISIBLE
+            } else {
+                holder.tvCommentText.visibility = View.GONE
+            }
+        }
 
         holder.itemView.setOnClickListener {
             onItemClick?.invoke(item)
