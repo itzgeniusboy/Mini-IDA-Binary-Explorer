@@ -16,10 +16,10 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Set up JDK 17
+    - name: Set up JDK 21
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
+        java-version: '21'
         distribution: 'temurin'
 
     - name: Setup Gradle
@@ -39,7 +39,7 @@ jobs:
         echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.1.10909125" >> $GITHUB_ENV
 
     - name: Force Gradle Wrapper Regeneration
-      run: gradle wrapper --gradle-version 8.7 --distribution-type bin
+      run: gradle wrapper --gradle-version 9.3.1 --distribution-type bin
 
     - name: Handle Missing Google Services
       run: echo '{"project_info":{"project_number":"123456789","project_id":"mock-id","storage_bucket":"mock.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:mock","android_client_info":{"package_name":"com.aistudio.miniida.uxrkpt"}},"api_key":[{"current_key":"mock-key"}],"services":{"appinvite_service":{"status":1}}}]}' > app/google-services.json
