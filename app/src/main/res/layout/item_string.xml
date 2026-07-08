@@ -31,6 +31,20 @@
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
+            <!-- Reference count indicator in cyber magenta/pink -->
+            <TextView
+                android:id="@+id/tv_string_xref_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_toEndOf="@id/tv_string_offset"
+                android:layout_marginStart="12dp"
+                android:fontFamily="monospace"
+                android:text="referenced by 0 functions"
+                android:textColor="#FF007F"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
             <!-- Length label in neon cyan -->
             <TextView
                 android:id="@+id/tv_string_len"
@@ -44,14 +58,34 @@
         </RelativeLayout>
 
         <!-- String text value -->
-        <TextView
-            android:id="@+id/tv_string_value"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:text="/system/lib64/libutils.so"
-            android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/tv_string_value"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:text="/system/lib64/libutils.so"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <ImageView
+                android:id="@+id/iv_string_bookmark"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_marginStart="8dp"
+                android:src="@android:drawable/btn_star_big_off"
+                android:padding="4dp"
+                android:focusable="false"
+                android:clickable="true"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Bookmark string" />
+        </LinearLayout>
 
     </LinearLayout>
 </androidx.cardview.widget.CardView>

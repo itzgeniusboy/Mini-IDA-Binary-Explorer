@@ -32,6 +32,13 @@ class ElfParser(private val buffer: ByteBuffer) {
         val length: Int
     )
 
+    data class SectionInfo(
+        val name: String,
+        val startAddress: Long,
+        val size: Long,
+        val fileOffset: Long
+    )
+
     data class ElfFunction(
         val address: String,
         val name: String,
@@ -49,7 +56,8 @@ class ElfParser(private val buffer: ByteBuffer) {
 
     data class TextSectionInfo(
         val virtualAddress: Long,
-        val bytes: ByteArray
+        val bytes: ByteArray,
+        val fileOffset: Long
     )
 
     companion object {
@@ -76,6 +84,94 @@ class ElfParser(private val buffer: ByteBuffer) {
     external fun disassembleNative(bytes: ByteArray, baseAddress: Long, length: Long): Array<String>
     external fun decompileNative(bytes: ByteArray, baseAddress: Long, length: Long): String
     external fun disassembleSection(bytes: ByteArray, baseAddress: Long, elfMachineType: Int, is64Bit: Boolean): Array<DisassemblyLine>?
+
+    fun getSections(): List<SectionInfo> {
+        val sections = mutableListOf<SectionInfo>()
+        val header = parseHeader()
+        if (!header.isElf) return sections
+
+        val is64Bit = header.is64Bit
+        val isLittleEndian = header.isLittleEndian
+        val localBuffer = buffer.duplicate()
+        localBuffer.order(if (isLittleEndian) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN)
+
+        try {
+            val shoff = if (is64Bit) {
+                safeGetLong(localBuffer, 40) ?: 0L
+            } else {
+                (safeGetInt(localBuffer, 32) ?: 0).toLong() and 0xFFFFFFFFL
+            }
+            val shentsize = if (is64Bit) {
+                (safeGetShort(localBuffer, 58) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 46) ?: 0).toInt()
+            }
+            val shnum = if (is64Bit) {
+                (safeGetShort(localBuffer, 60) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 48) ?: 0).toInt()
+            }
+            val shstrndx = if (is64Bit) {
+                (safeGetShort(localBuffer, 62) ?: 0).toInt()
+            } else {
+                (safeGetShort(localBuffer, 50) ?: 0).toInt()
+            }
+
+            if (shoff > 0 && shnum > 0 && shstrndx >= 0 && shstrndx < shnum) {
+                val shstrOffsetSec = shoff + shstrndx * shentsize
+                val shstr_offset = if (is64Bit) {
+                    safeGetLong(localBuffer, (shstrOffsetSec + 24).toInt()) ?: 0L
+                } else {
+                    (safeGetInt(localBuffer, (shstrOffsetSec + 16).toInt()) ?: 0).toLong() and 0xFFFFFFFFL
+                }
+                val shstr_size = if (is64Bit) {
+                    safeGetLong(localBuffer, (shstrOffsetSec + 32).toInt()) ?: 0L
+                } else {
+                    (safeGetInt(localBuffer, (shstrOffsetSec + 20).toInt()) ?: 0).toLong() and 0xFFFFFFFFL
+                }
+
+                if (shstr_offset > 0) {
+                    for (i in 0 until shnum) {
+                        val secOffset = shoff + i * shentsize
+                        if (secOffset + shentsize > localBuffer.capacity()) break
+
+                        val sh_name = safeGetInt(localBuffer, secOffset.toInt()) ?: continue
+                        val sh_addr = if (is64Bit) {
+                            safeGetLong(localBuffer, (secOffset + 16).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (secOffset + 12).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+                        val sh_offset = if (is64Bit) {
+                            safeGetLong(localBuffer, (secOffset + 24).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (secOffset + 16).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+                        val sh_size = if (is64Bit) {
+                            safeGetLong(localBuffer, (secOffset + 32).toInt()) ?: continue
+                        } else {
+                            (safeGetInt(localBuffer, (secOffset + 20).toInt()) ?: continue).toLong() and 0xFFFFFFFFL
+                        }
+
+                        val nameIndex = shstr_offset + sh_name
+                        if (nameIndex < localBuffer.capacity()) {
+                            val nameLen = localBuffer.indexOfNull(nameIndex.toInt(), (shstr_offset + shstr_size).toInt())
+                            if (nameLen > 0 && nameIndex + nameLen <= localBuffer.capacity()) {
+                                val nameBytes = ByteArray(nameLen)
+                                val nameDup = localBuffer.duplicate()
+                                nameDup.position(nameIndex.toInt())
+                                nameDup.get(nameBytes)
+                                val name = String(nameBytes, Charsets.UTF_8)
+                                sections.add(SectionInfo(name, sh_addr, sh_size, sh_offset))
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ElfParser", "Error reading sections: ${e.message}")
+        }
+        return sections
+    }
 
     fun findTextSection(): TextSectionInfo? {
         val header = parseHeader()
@@ -160,7 +256,7 @@ class ElfParser(private val buffer: ByteBuffer) {
                                     val textDup = localBuffer.duplicate()
                                     textDup.position(sh_offset.toInt())
                                     textDup.get(textBytes)
-                                    return TextSectionInfo(sh_addr, textBytes)
+                                    return TextSectionInfo(sh_addr, textBytes, sh_offset)
                                 }
                             }
                         }
@@ -226,7 +322,7 @@ class ElfParser(private val buffer: ByteBuffer) {
                                 val textDup = localBuffer.duplicate()
                                 textDup.position(p_offset.toInt())
                                 textDup.get(textBytes)
-                                return TextSectionInfo(p_vaddr, textBytes)
+                                return TextSectionInfo(p_vaddr, textBytes, p_offset)
                             }
                         }
                     }

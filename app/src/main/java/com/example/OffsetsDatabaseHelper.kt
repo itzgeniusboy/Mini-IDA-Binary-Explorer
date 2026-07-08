@@ -9,7 +9,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
     companion object {
         const val DATABASE_NAME = "offsets.db"
-        const val DATABASE_VERSION = 4
+        const val DATABASE_VERSION = 5
 
         const val TABLE_OFFSETS = "offsets"
         const val COLUMN_ID = "id"
@@ -65,12 +65,28 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
         db.execSQL("CREATE INDEX idx_annotations_file_id ON annotations (file_id)")
         db.execSQL("CREATE INDEX idx_annotations_address ON annotations (address)")
+
+        // Add bookmarks table
+        val createBookmarksTableQuery = """
+            CREATE TABLE bookmarks (
+                file_id TEXT,
+                address INTEGER,
+                label TEXT,
+                created_at INTEGER,
+                PRIMARY KEY(file_id, address)
+            )
+        """.trimIndent()
+        db.execSQL(createBookmarksTableQuery)
+
+        db.execSQL("CREATE INDEX idx_bookmarks_file_id ON bookmarks (file_id)")
+        db.execSQL("CREATE INDEX idx_bookmarks_address ON bookmarks (address)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         db.execSQL("DROP TABLE IF EXISTS $TABLE_OFFSETS")
         db.execSQL("DROP TABLE IF EXISTS xrefs")
         db.execSQL("DROP TABLE IF EXISTS annotations")
+        db.execSQL("DROP TABLE IF EXISTS bookmarks")
         onCreate(db)
     }
 
@@ -316,5 +332,57 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         val db = readableDatabase
         val query = "SELECT address, custom_name, comment, updated_at FROM annotations WHERE file_id = ?"
         return db.rawQuery(query, arrayOf(fileId))
+    }
+
+    fun addBookmark(fileId: String, address: Long, label: String?, createdAt: Long) {
+        val db = writableDatabase
+        val query = """
+            INSERT OR REPLACE INTO bookmarks (file_id, address, label, created_at)
+            VALUES (?, ?, ?, ?)
+        """.trimIndent()
+        val statement = db.compileStatement(query)
+        statement.clearBindings()
+        statement.bindString(1, fileId)
+        statement.bindLong(2, address)
+        if (label != null) {
+            statement.bindString(3, label)
+        } else {
+            statement.bindNull(3)
+        }
+        statement.bindLong(4, createdAt)
+        statement.executeInsert()
+    }
+
+    fun removeBookmark(fileId: String, address: Long) {
+        val db = writableDatabase
+        db.delete("bookmarks", "file_id = ? AND address = ?", arrayOf(fileId, address.toString()))
+    }
+
+    fun isBookmarked(fileId: String, address: Long): Boolean {
+        val db = readableDatabase
+        val query = "SELECT 1 FROM bookmarks WHERE file_id = ? AND address = ?"
+        val cursor = db.rawQuery(query, arrayOf(fileId, address.toString()))
+        cursor.use {
+            return cursor.count > 0
+        }
+    }
+
+    fun getAllBookmarks(fileId: String): List<BookmarkEntry> {
+        val db = readableDatabase
+        val list = mutableListOf<BookmarkEntry>()
+        val query = "SELECT address, label, created_at FROM bookmarks WHERE file_id = ? ORDER BY address ASC"
+        val cursor = db.rawQuery(query, arrayOf(fileId))
+        cursor.use {
+            val addrIdx = cursor.getColumnIndex("address")
+            val labelIdx = cursor.getColumnIndex("label")
+            val createdIdx = cursor.getColumnIndex("created_at")
+            while (cursor.moveToNext()) {
+                val address = if (addrIdx != -1) cursor.getLong(addrIdx) else 0L
+                val label = if (labelIdx != -1 && !cursor.isNull(labelIdx)) cursor.getString(labelIdx) else null
+                val createdAt = if (createdIdx != -1) cursor.getLong(createdIdx) else 0L
+                list.add(BookmarkEntry(address, label, createdAt))
+            }
+        }
+        return list
     }
 }

@@ -74,6 +74,12 @@ object AnnotationRepository {
             return entry.customName
         }
 
+        // 2. Check signature-suggested name
+        val suggestion = SignatureMatcher.getSuggestion(address)
+        if (suggestion != null && suggestion.functionName.isNotBlank()) {
+            return suggestion.functionName
+        }
+
         if (fallbackName != null && fallbackName.isNotBlank()) {
             val demangled = ElfParser.demangleName(fallbackName)
             if (demangled.isNotBlank()) {

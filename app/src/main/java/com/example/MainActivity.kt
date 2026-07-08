@@ -11,6 +11,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -57,8 +58,19 @@ class MainActivity : AppCompatActivity() {
     private var allHexCached: List<ElfParser.HexRow> = emptyList()
     private var allDisassemblyCached: List<DisassemblyLine> = emptyList()
 
+    private val minimapVisibleStartAddr = androidx.compose.runtime.mutableStateOf(0L)
+    private val minimapVisibleEndAddr = androidx.compose.runtime.mutableStateOf(0L)
+    private val minimapFunctions = androidx.compose.runtime.mutableStateOf<List<ElfParser.ElfFunction>>(emptyList())
+    private val minimapBookmarks = androidx.compose.runtime.mutableStateOf<List<BookmarkEntry>>(emptyList())
+
+    private val textSectionState = androidx.compose.runtime.mutableStateOf<ElfParser.TextSectionInfo?>(null)
+    private var textSectionCached: ElfParser.TextSectionInfo?
+        get() = textSectionState.value
+        set(value) {
+            textSectionState.value = value
+        }
+
     private var isXrefPreScanned: Boolean = true
-    private var textSectionCached: ElfParser.TextSectionInfo? = null
     private var disassembledOffset: Int = 0
     private val DISASSEMBLY_CHUNK_SIZE = 128 * 1024 // 128KB chunks
     private var loadJob: kotlinx.coroutines.Job? = null
@@ -107,8 +119,24 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         },
-        onItemLongClick = { line ->
-            showAnnotationDialog(line.address, "0x" + line.address.toString(16).uppercase())
+        onItemLongClick = { view, line ->
+            val popup = androidx.appcompat.widget.PopupMenu(this@MainActivity, view)
+            popup.menu.add("Add/Edit Comment")
+            popup.menu.add("View bytes in Hex")
+            popup.setOnMenuItemClickListener { menuItem ->
+                when (menuItem.title) {
+                    "Add/Edit Comment" -> {
+                        showAnnotationDialog(line.address, "0x" + line.address.toString(16).uppercase())
+                        true
+                    }
+                    "View bytes in Hex" -> {
+                        navigateToHexAddress(line.address, line.bytesHex.length / 2)
+                        true
+                    }
+                    else -> false
+                }
+            }
+            popup.show()
             true
         }
     )
@@ -168,8 +196,141 @@ class MainActivity : AppCompatActivity() {
                     showAnnotationDialog(addressLong, selectedFunction.name)
                 }
                 true
+            },
+            onAcceptSuggestion = { selectedFunction, signatureMatch ->
+                val addrHex = selectedFunction.address.removePrefix("0x").removePrefix("0X")
+                val addressLong = addrHex.toLongOrNull(16)
+                if (addressLong != null) {
+                    val fileId = currentFileName ?: ""
+                    AnnotationRepository.upsertAnnotation(
+                        this@MainActivity,
+                        fileId,
+                        addressLong,
+                        signatureMatch.functionName,
+                        "Accepted signature suggestion"
+                    )
+                    SignatureMatcher.removeSuggestion(addressLong)
+                    
+                    // Refresh all views and minimap
+                    disassemblyTabAdapter.notifyDataSetChanged()
+                    functionsAdapter.notifyDataSetChanged()
+                    stringsAdapter.notifyDataSetChanged()
+                    minimapBookmarks.value = BookmarkRepository.getAllBookmarks()
+                    updateMinimapState()
+                    
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "Accepted suggestion: ${signatureMatch.functionName}",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            onDismissSuggestion = { selectedFunction ->
+                val addrHex = selectedFunction.address.removePrefix("0x").removePrefix("0X")
+                val addressLong = addrHex.toLongOrNull(16)
+                if (addressLong != null) {
+                    SignatureMatcher.removeSuggestion(addressLong)
+                    
+                    // Refresh views
+                    disassemblyTabAdapter.notifyDataSetChanged()
+                    functionsAdapter.notifyDataSetChanged()
+                    stringsAdapter.notifyDataSetChanged()
+                    updateMinimapState()
+                    
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "Dismissed suggestion",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         )
+
+        stringsAdapter.getXrefCount = { address ->
+            val fileId = currentFileName ?: ""
+            if (fileId.isNotEmpty()) {
+                offsetsDbHelper.getXrefsTo(fileId, address).size
+            } else {
+                0
+            }
+        }
+        stringsAdapter.onXrefClick = { str ->
+            val addressLong = str.offset.removePrefix("0x").toLongOrNull(16)
+            if (addressLong != null) {
+                showStringXrefsDialog(addressLong, str.value)
+            }
+        }
+
+        disassemblyTabAdapter.resolveDataXrefText = { address ->
+            val fileId = currentFileName ?: ""
+            if (fileId.isNotEmpty()) {
+                val xrefs = offsetsDbHelper.getXrefsFrom(fileId, address)
+                val dataXref = xrefs.find { it.type == "string_ref" || it.type == "data_ref" }
+                if (dataXref != null) {
+                    if (dataXref.type == "string_ref") {
+                        val strObj = allStringsCached.find {
+                            val strAddr = it.offset.removePrefix("0x").toLongOrNull(16) ?: 0L
+                            strAddr == dataXref.toAddr
+                        }
+                        if (strObj != null) {
+                            "\"${strObj.value}\""
+                        } else {
+                            "[string_ref: 0x${dataXref.toAddr.toString(16).uppercase()}]"
+                        }
+                    } else {
+                        "[data_ref: 0x${dataXref.toAddr.toString(16).uppercase()}]"
+                    }
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        }
+
+        hexAdapter.onByteClick = { clickedAddress ->
+            val textSec = textSectionCached
+            if (textSec != null) {
+                val startOffset = textSec.fileOffset
+                val endOffset = startOffset + textSec.bytes.size
+                if (clickedAddress >= startOffset && clickedAddress < endOffset) {
+                    val relativeOffset = clickedAddress - startOffset
+                    val virtualAddress = textSec.virtualAddress + relativeOffset
+                    
+                    val matchedLine = findDisassemblyLineForAddress(virtualAddress)
+                    if (matchedLine != null) {
+                        navigateToAddress(matchedLine.address)
+                    } else {
+                        navigateToAddress(virtualAddress)
+                    }
+                } else {
+                    android.widget.Toast.makeText(this@MainActivity, "This address is not in an executable region", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                android.widget.Toast.makeText(this@MainActivity, "This address is not in an executable region", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        disassemblyTabAdapter.onBookmarkToggle = { line ->
+            val defaultLabel = AnnotationRepository.resolveAddressName(line.address)
+            toggleBookmarkWithDialog(line.address, defaultLabel)
+        }
+
+        functionsAdapter.onBookmarkToggle = { func ->
+            val addrHex = func.address.removePrefix("0x")
+            val addressLong = addrHex.toLongOrNull(16) ?: 0L
+            if (addressLong != 0L) {
+                val defaultLabel = AnnotationRepository.resolveAddressName(addressLong)
+                toggleBookmarkWithDialog(addressLong, defaultLabel)
+            }
+        }
+
+        stringsAdapter.onBookmarkToggle = { str ->
+            val addressLong = str.offset.removePrefix("0x").toLongOrNull(16) ?: 0L
+            if (addressLong != 0L) {
+                toggleBookmarkWithDialog(addressLong, str.value)
+            }
+        }
 
         // Initialize layout based on initial orientation
         initLayout()
@@ -261,7 +422,16 @@ class MainActivity : AppCompatActivity() {
                     tabEmptyStates[i]?.visibility = View.GONE
                     tabRecyclerViews[i]?.visibility = View.VISIBLE
                 }
+
+                tabRecyclerViews[3]?.post {
+                    updateMinimapState()
+                }
             }
+        }
+
+        val btnShowBookmarks: android.widget.ImageButton? = findViewById(R.id.btn_show_bookmarks)
+        btnShowBookmarks?.setOnClickListener {
+            showBookmarksDialog()
         }
     }
 
@@ -286,9 +456,36 @@ class MainActivity : AppCompatActivity() {
                             if (lastVisible >= totalItemCount - 50) {
                                 loadNextDisassemblyChunk()
                             }
+                            updateMinimapScrollPosition()
                         }
                     }
                 })
+
+                val minimapComposeView: androidx.compose.ui.platform.ComposeView? = itemView.findViewById(R.id.minimap_compose_view)
+                minimapComposeView?.apply {
+                    setViewTreeLifecycleOwner(this@MainActivity)
+                    setViewTreeViewModelStoreOwner(this@MainActivity)
+                    setViewTreeSavedStateRegistryOwner(this@MainActivity)
+                    setContent {
+                        val textSection = textSectionCached
+                        if (textSection != null) {
+                            minimapComposeView.visibility = View.VISIBLE
+                            NavigationMinimap(
+                                textSectionStart = textSection.virtualAddress,
+                                textSectionSize = textSection.bytes.size.toLong(),
+                                functions = minimapFunctions.value,
+                                visibleStartAddr = minimapVisibleStartAddr.value,
+                                visibleEndAddr = minimapVisibleEndAddr.value,
+                                bookmarks = minimapBookmarks.value,
+                                onNavigateToAddress = { targetAddress ->
+                                    navigateToAddress(targetAddress)
+                                }
+                            )
+                        } else {
+                            minimapComposeView.visibility = View.GONE
+                        }
+                    }
+                }
 
                 val etDisasmFilter: EditText? = itemView.findViewById(R.id.et_disasm_filter)
                 etDisasmFilter?.addTextChangedListener(object : android.text.TextWatcher {
@@ -709,6 +906,44 @@ class MainActivity : AppCompatActivity() {
             }
             yield()
 
+            emit(LoadProgress(LoadStage.MATCHING_SIGNATURES, 0, "Auto-identifying common library functions using signatures..."))
+            SignatureMatcher.loadSignatures(this@MainActivity)
+            SignatureMatcher.clear()
+
+            if (textSection != null && totalSymbolsCount <= 50000) {
+                val arch = ElfArch.fromMachineVal(header.machineVal)
+                var matchedCount = 0
+                rawSymbols.forEachIndexed { idx, f ->
+                    if (idx % 1000 == 0) {
+                        yield()
+                        emit(LoadProgress(LoadStage.MATCHING_SIGNATURES, idx, "Matched $matchedCount function signatures..."))
+                    }
+                    val name = f.name
+                    val isGeneric = name.startsWith("sub_") || name.isBlank() || name == "sub"
+                    if (isGeneric) {
+                        val addressLong = f.address.removePrefix("0x").removePrefix("0X").toLongOrNull(16)
+                        if (addressLong != null) {
+                            val textOffset = (addressLong - textSection.virtualAddress).toInt()
+                            if (textOffset >= 0 && textOffset < textSection.bytes.size) {
+                                val maxLen = minOf(32, textSection.bytes.size - textOffset)
+                                if (maxLen > 0) {
+                                    val functionBytes = textSection.bytes.copyOfRange(textOffset, textOffset + maxLen)
+                                    val match = SignatureMatcher.matchFunction(functionBytes, arch)
+                                    if (match != null) {
+                                        SignatureMatcher.addSuggestion(addressLong, match)
+                                        matchedCount++
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                emit(LoadProgress(LoadStage.MATCHING_SIGNATURES, rawSymbols.size, "Auto-identified $matchedCount functions successfully."))
+            } else if (textSection != null) {
+                emit(LoadProgress(LoadStage.MATCHING_SIGNATURES, 0, "Skipping auto-signature matching (>50k symbols to keep UI responsive)."))
+            }
+            yield()
+
             emit(LoadProgress(LoadStage.PARSING_SECTIONS, 0, "Preparing initial disassembly view..."))
 
             val disassemblyList = if (textSection != null) {
@@ -734,6 +969,7 @@ class MainActivity : AppCompatActivity() {
 
             AnnotationRepository.loadAnnotations(this@MainActivity, displayName)
             AnnotationRepository.setFunctions(cappedSymbols)
+            BookmarkRepository.loadBookmarks(this@MainActivity, displayName)
 
             val estimatedInstructions = if (textSection != null) textSection.bytes.size / 4 else 0
             if (estimatedInstructions > 2000000) {
@@ -741,8 +977,9 @@ class MainActivity : AppCompatActivity() {
                 emit(LoadProgress(LoadStage.DONE, 0, "Skipping full XREF scan (>2M instructions). On-demand lookup enabled."))
             } else {
                 isXrefPreScanned = true
-                emit(LoadProgress(LoadStage.INDEXING_DB, 0, "Scanning instruction flow for XREFs..."))
+                emit(LoadProgress(LoadStage.RESOLVING_DATA_XREFS, 0, "Scanning instruction flow for code and data XREFs..."))
 
+                val sections = parser.getSections()
                 val fullDisassemblyForXrefs = if (textSection != null) {
                     parser.disassembleSection(
                         textSection.bytes,
@@ -754,7 +991,15 @@ class MainActivity : AppCompatActivity() {
                     emptyArray()
                 }
 
-                val xrefs = XrefAnalyzer.analyze(fullDisassemblyForXrefs.toList())
+                val xrefs = withContext(Dispatchers.Default) {
+                    XrefAnalyzer.analyze(
+                        disassembly = fullDisassemblyForXrefs.toList(),
+                        knownStrings = allStringsCached,
+                        sections = sections,
+                        buffer = binaryBuffer,
+                        isLittleEndian = header.isLittleEndian
+                    )
+                }
                 offsetsDbHelper.insertXrefs(displayName, xrefs)
             }
             yield()
@@ -793,6 +1038,10 @@ class MainActivity : AppCompatActivity() {
                     tabProgressBars[i]?.visibility = View.GONE
                     tabEmptyStates[i]?.visibility = View.GONE
                     tabRecyclerViews[i]?.visibility = View.VISIBLE
+                }
+
+                tabRecyclerViews[3]?.post {
+                    updateMinimapState()
                 }
 
                 if (!isXrefPreScanned) {
@@ -1108,6 +1357,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showStringXrefsDialog(address: Long, stringValue: String) {
+        val fileId = currentFileName ?: ""
+        if (fileId.isEmpty()) return
+
+        lifecycleScope.launch(Dispatchers.Default) {
+            val referencingXrefs = offsetsDbHelper.getXrefsTo(fileId, address)
+
+            withContext(Dispatchers.Main) {
+                val dialogView = LayoutInflater.from(this@MainActivity).inflate(R.layout.dialog_xref_details, null)
+                val tvDialogTitle: TextView = dialogView.findViewById(R.id.tv_dialog_title)
+                val containerCalledBy: android.widget.LinearLayout = dialogView.findViewById(R.id.container_called_by)
+                val containerCalls: android.widget.LinearLayout = dialogView.findViewById(R.id.container_calls)
+                val tvCalledByHeader: TextView = dialogView.findViewById(R.id.tv_called_by_header)
+                val tvCallsHeader: TextView = dialogView.findViewById(R.id.tv_calls_header)
+
+                // Hide Calls section
+                tvCallsHeader.visibility = View.GONE
+                containerCalls.visibility = View.GONE
+
+                val displayTitle = if (stringValue.length > 25) stringValue.substring(0, 22) + "..." else stringValue
+                tvDialogTitle.text = "XREFS FOR \"$displayTitle\""
+                tvCalledByHeader.text = "REFERENCED BY (${referencingXrefs.size})"
+
+                val dialog = androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
+                    .setView(dialogView)
+                    .create()
+
+                if (referencingXrefs.isEmpty()) {
+                    val emptyTv = TextView(this@MainActivity).apply {
+                        text = " No references found."
+                        setTextColor(android.graphics.Color.parseColor("#5A6075"))
+                        textSize = 12f
+                        setPadding(16, 8, 16, 8)
+                    }
+                    containerCalledBy.addView(emptyTv)
+                } else {
+                    for (ref in referencingXrefs) {
+                        val itemView = LayoutInflater.from(this@MainActivity).inflate(R.layout.item_xref_list, containerCalledBy, false)
+                        val tvRefText: TextView = itemView.findViewById(R.id.tv_xref_text)
+                        val fromHex = "0x" + ref.fromAddr.toString(16).uppercase()
+
+                        val resolvedName = AnnotationRepository.resolveAddressName(ref.fromAddr)
+                        val label = "$fromHex ($resolvedName)"
+                        tvRefText.text = "← $label"
+
+                        itemView.setOnClickListener {
+                            dialog.dismiss()
+                            navigateToAddress(ref.fromAddr)
+                        }
+                        containerCalledBy.addView(itemView)
+                    }
+                }
+
+                dialog.show()
+                dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+            }
+        }
+    }
+
     private fun navigateToAddress(address: Long) {
         if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
             viewPager.currentItem = 3
@@ -1115,18 +1423,221 @@ class MainActivity : AppCompatActivity() {
         navigationController.navigateTo(address)
     }
 
+    private fun toggleBookmarkWithDialog(address: Long, defaultLabel: String) {
+        val fileId = currentFileName
+        if (fileId.isEmpty()) return
+
+        if (BookmarkRepository.isBookmarked(address)) {
+            BookmarkRepository.removeBookmark(this, fileId, address)
+            android.widget.Toast.makeText(this, "Bookmark removed", android.widget.Toast.LENGTH_SHORT).show()
+            disassemblyTabAdapter.notifyDataSetChanged()
+            functionsAdapter.notifyDataSetChanged()
+            stringsAdapter.notifyDataSetChanged()
+            minimapBookmarks.value = BookmarkRepository.getAllBookmarks()
+        } else {
+            val input = android.widget.EditText(this).apply {
+                setText(defaultLabel)
+                setSelection(defaultLabel.length)
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Add Bookmark")
+                .setMessage("Set a label for address 0x${address.toString(16).uppercase()}:")
+                .setView(input)
+                .setPositiveButton("Bookmark") { _, _ ->
+                    val label = input.text.toString().trim()
+                    val finalLabel = if (label.isEmpty()) defaultLabel else label
+                    BookmarkRepository.addBookmark(this, fileId, address, finalLabel)
+                    android.widget.Toast.makeText(this, "Bookmarked: $finalLabel", android.widget.Toast.LENGTH_SHORT).show()
+                    disassemblyTabAdapter.notifyDataSetChanged()
+                    functionsAdapter.notifyDataSetChanged()
+                    stringsAdapter.notifyDataSetChanged()
+                    minimapBookmarks.value = BookmarkRepository.getAllBookmarks()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun showBookmarksDialog() {
+        val fileId = currentFileName
+        if (fileId.isEmpty()) {
+            android.widget.Toast.makeText(this, "Please open a file first", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_bookmarks, null)
+        val containerBookmarks: android.widget.LinearLayout = dialogView.findViewById(R.id.container_bookmarks)
+        val btnClose: android.widget.Button = dialogView.findViewById(R.id.btn_close_bookmarks)
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        btnClose.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        fun populateBookmarks() {
+            containerBookmarks.removeAllViews()
+            val bookmarksList = BookmarkRepository.getAllBookmarks().sortedBy { it.address }
+            if (bookmarksList.isEmpty()) {
+                val emptyTv = TextView(this).apply {
+                    text = "No bookmarks set for this file.\nStar addresses in Functions, Disassembly, or Strings tabs to save them."
+                    setTextColor(android.graphics.Color.parseColor("#5A6075"))
+                    textSize = 12f
+                    gravity = android.view.Gravity.CENTER
+                    setPadding(16, 48, 16, 48)
+                }
+                containerBookmarks.addView(emptyTv)
+            } else {
+                for (b in bookmarksList) {
+                    val rowView = LayoutInflater.from(this).inflate(R.layout.item_bookmark_row, containerBookmarks, false)
+                    val tvLabel: TextView = rowView.findViewById(R.id.tv_bookmark_label)
+                    val tvAddress: TextView = rowView.findViewById(R.id.tv_bookmark_address)
+                    val ivRemove: ImageView = rowView.findViewById(R.id.iv_bookmark_remove)
+
+                    tvLabel.text = b.label ?: "0x${b.address.toString(16).uppercase()}"
+                    tvAddress.text = "0x" + b.address.toString(16).uppercase().padStart(8, '0')
+
+                    rowView.setOnClickListener {
+                        dialog.dismiss()
+                        navigateToAddress(b.address)
+                    }
+
+                    ivRemove.setOnClickListener {
+                        BookmarkRepository.removeBookmark(this, fileId, b.address)
+                        android.widget.Toast.makeText(this, "Bookmark removed", android.widget.Toast.LENGTH_SHORT).show()
+                        populateBookmarks()
+                        
+                        // Notify all tabs to update their star states
+                        disassemblyTabAdapter.notifyDataSetChanged()
+                        functionsAdapter.notifyDataSetChanged()
+                        stringsAdapter.notifyDataSetChanged()
+                        minimapBookmarks.value = BookmarkRepository.getAllBookmarks()
+                    }
+
+                    containerBookmarks.addView(rowView)
+                }
+            }
+        }
+
+        populateBookmarks()
+        dialog.show()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+    }
+
     private fun updateNavigationButtons() {
         btnDisasmBack?.isEnabled = navigationController.canGoBack()
         btnDisasmForward?.isEnabled = navigationController.canGoForward()
     }
 
+    private fun updateMinimapState() {
+        val textSection = textSectionCached
+        if (textSection != null) {
+            minimapFunctions.value = allFunctionsCached
+            minimapBookmarks.value = BookmarkRepository.getAllBookmarks()
+            
+            // Calculate current visible address range
+            val rv = tabRecyclerViews[3]
+            val layoutManager = rv?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
+            if (layoutManager != null) {
+                val firstVisible = layoutManager.findFirstVisibleItemPosition()
+                val lastVisible = layoutManager.findLastVisibleItemPosition()
+                
+                val firstLine = allDisassemblyCached.getOrNull(firstVisible)
+                val lastLine = allDisassemblyCached.getOrNull(lastVisible)
+                
+                minimapVisibleStartAddr.value = firstLine?.address ?: textSection.virtualAddress
+                minimapVisibleEndAddr.value = lastLine?.address ?: (textSection.virtualAddress + textSection.bytes.size)
+            } else {
+                minimapVisibleStartAddr.value = textSection.virtualAddress
+                minimapVisibleEndAddr.value = textSection.virtualAddress + minOf(textSection.bytes.size.toLong(), DISASSEMBLY_CHUNK_SIZE.toLong())
+            }
+        } else {
+            minimapFunctions.value = emptyList()
+            minimapBookmarks.value = emptyList()
+            minimapVisibleStartAddr.value = 0L
+            minimapVisibleEndAddr.value = 0L
+        }
+    }
+
+    private fun updateMinimapScrollPosition() {
+        val textSection = textSectionCached ?: return
+        val rv = tabRecyclerViews[3]
+        val layoutManager = rv?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
+        if (layoutManager != null) {
+            val firstVisible = layoutManager.findFirstVisibleItemPosition()
+            val lastVisible = layoutManager.findLastVisibleItemPosition()
+            
+            val firstLine = allDisassemblyCached.getOrNull(firstVisible)
+            val lastLine = allDisassemblyCached.getOrNull(lastVisible)
+            
+            if (firstLine != null) {
+                minimapVisibleStartAddr.value = firstLine.address
+            }
+            if (lastLine != null) {
+                minimapVisibleEndAddr.value = lastLine.address
+            }
+        }
+    }
+
     private fun scrollToDisassemblyAddress(address: Long) {
-        val index = allDisassemblyCached.indexOfFirst { it.address == address }
-        if (index != -1) {
-            val recyclerView = tabRecyclerViews[3]
-            val layoutManager = recyclerView?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
-            layoutManager?.scrollToPositionWithOffset(index, 0)
-            disassemblyTabAdapter.setHighlightAddress(address)
+        val recyclerView = tabRecyclerViews[3]
+        if (recyclerView != null) {
+            recyclerView.scrollToAddress(
+                matcher = { index ->
+                    val line = allDisassemblyCached.getOrNull(index)
+                    line != null && line.address == address
+                },
+                onFound = { index ->
+                    disassemblyTabAdapter.setHighlightAddress(address)
+                }
+            )
+        }
+    }
+
+    private fun navigateToHexAddress(address: Long, length: Int) {
+        val textSec = textSectionCached
+        if (textSec != null) {
+            if (address >= textSec.virtualAddress && address < textSec.virtualAddress + textSec.bytes.size) {
+                val relativeOffset = address - textSec.virtualAddress
+                val fileOffset = textSec.fileOffset + relativeOffset
+                
+                if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
+                    viewPager.currentItem = 2 // HEX Tab
+                }
+                
+                scrollToHexOffset(fileOffset, length)
+            } else {
+                android.widget.Toast.makeText(this, "Address not in text section range.", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun scrollToHexOffset(offset: Long, length: Int) {
+        val recyclerView = tabRecyclerViews[2]
+        if (recyclerView != null) {
+            recyclerView.scrollToAddress(
+                matcher = { index ->
+                    val row = allHexCached.getOrNull(index)
+                    if (row != null) {
+                        val baseAddr = row.address.removePrefix("0x").toLongOrNull(16) ?: 0L
+                        offset >= baseAddr && offset < baseAddr + 16
+                    } else {
+                        false
+                    }
+                },
+                onFound = { index ->
+                    hexAdapter.setHighlightRange(offset, length)
+                }
+            )
+        }
+    }
+
+    private fun findDisassemblyLineForAddress(virtualAddress: Long): DisassemblyLine? {
+        return allDisassemblyCached.find { line ->
+            val len = line.bytesHex.length / 2
+            virtualAddress >= line.address && virtualAddress < line.address + len
         }
     }
 

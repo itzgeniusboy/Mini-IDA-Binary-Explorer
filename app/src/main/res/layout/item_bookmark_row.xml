@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="?android:attr/selectableItemBackground"
+    android:clickable="true"
+    android:focusable="true"
+    android:padding="12dp">
+
+    <!-- Bookmark details (Address + Label) -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <!-- Label -->
+        <TextView
+            android:id="@+id/tv_bookmark_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="android::String8::clear()"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <!-- Address -->
+        <TextView
+            android:id="@+id/tv_bookmark_address"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:fontFamily="monospace"
+            android:text="0x00010D00"
+            android:textColor="@color/neon_cyan"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <!-- Remove (Unstar) button -->
+    <ImageView
+        android:id="@+id/iv_bookmark_remove"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="8dp"
+        android:src="@android:drawable/btn_star_big_on"
+        android:padding="6dp"
+        android:focusable="false"
+        android:clickable="true"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="Remove Bookmark" />
+
+</LinearLayout>

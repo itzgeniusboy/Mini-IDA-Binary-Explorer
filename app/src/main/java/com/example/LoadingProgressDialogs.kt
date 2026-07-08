@@ -65,9 +65,11 @@ fun LoadingProgressScreen(
             val progressFraction = when (stage) {
                 LoadStage.READING_HEADER -> 0.15f
                 LoadStage.PARSING_SECTIONS -> 0.35f
-                LoadStage.EXTRACTING_SYMBOLS -> 0.55f
-                LoadStage.EXTRACTING_STRINGS -> 0.75f
-                LoadStage.INDEXING_DB -> 0.90f
+                LoadStage.EXTRACTING_SYMBOLS -> 0.50f
+                LoadStage.EXTRACTING_STRINGS -> 0.65f
+                LoadStage.INDEXING_DB -> 0.80f
+                LoadStage.MATCHING_SIGNATURES -> 0.90f
+                LoadStage.RESOLVING_DATA_XREFS -> 0.95f
                 LoadStage.DONE -> 1.0f
                 LoadStage.ERROR -> 1.0f
             }
@@ -90,6 +92,8 @@ fun LoadingProgressScreen(
                 LoadStage.EXTRACTING_SYMBOLS -> "EXTRACTING SYMBOLS"
                 LoadStage.EXTRACTING_STRINGS -> "EXTRACTING STRINGS"
                 LoadStage.INDEXING_DB -> "INDEXING DATABASE"
+                LoadStage.MATCHING_SIGNATURES -> "MATCHING SIGNATURES"
+                LoadStage.RESOLVING_DATA_XREFS -> "RESOLVING DATA XREFS"
                 LoadStage.DONE -> "ANALYSIS COMPLETE"
                 LoadStage.ERROR -> "ANALYSIS ERROR"
             }

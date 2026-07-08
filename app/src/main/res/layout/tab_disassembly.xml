@@ -65,18 +65,33 @@
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <!-- Highly Optimized RecyclerView for smooth scrolling on massive instruction sets -->
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recycler_view"
+        <!-- Layout with horizontal split for minimap and disassembly -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingBottom="16dp"
-            android:scrollbarStyle="outsideOverlay"
-            android:scrollbars="vertical"
-            android:scrollbarThumbVertical="@drawable/scrollbar_thumb_neon"
-            android:scrollbarSize="4dp"
-            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+            android:orientation="horizontal">
+
+            <!-- Highly Optimized RecyclerView for smooth scrolling on massive instruction sets -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recycler_view"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:paddingBottom="16dp"
+                android:scrollbarStyle="outsideOverlay"
+                android:scrollbars="vertical"
+                android:scrollbarThumbVertical="@drawable/scrollbar_thumb_neon"
+                android:scrollbarSize="4dp"
+                app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+
+            <!-- Vertical navigation minimap strip -->
+            <androidx.compose.ui.platform.ComposeView
+                android:id="@+id/minimap_compose_view"
+                android:layout_width="32dp"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+        </LinearLayout>
 
         <!-- Loading Placeholder -->
         <ProgressBar

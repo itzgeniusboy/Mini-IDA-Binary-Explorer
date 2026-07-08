@@ -1,0 +1,128 @@
+[
+  {
+    "name": "memcpy",
+    "arch": "ARM64",
+    "pattern": "F30F1EFAFD7BC1A9FD030091E00300AA",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "strcpy",
+    "arch": "ARM64",
+    "pattern": "FD7BBFA9FD030091E003012A080040F9",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF0000FFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "strlen",
+    "arch": "ARM64",
+    "pattern": "F30F1EFAFD7BC1A9FD030091E00300AA",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "strcmp",
+    "arch": "ARM64",
+    "pattern": "FD7BC1A9FD030091E00300AAE10301AA",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "memset",
+    "arch": "ARM64",
+    "pattern": "F30F1EFAFD7BC1A9FD030091E00300AA1F0000B9",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFF0000FFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "malloc",
+    "arch": "ARM64",
+    "pattern": "FD7BBEA9FD030091F30300AA00000094",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000",
+    "source": "libc.so"
+  },
+  {
+    "name": "free",
+    "arch": "ARM64",
+    "pattern": "FD7BBEA9FD030091F30300AA00000094F303012A",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "sprintf",
+    "arch": "ARM64",
+    "pattern": "FD7BC3A9FD030091E00300AAE10301AAE20302AA",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "printf",
+    "arch": "ARM64",
+    "pattern": "FD7BC1A9FD030091E00300AA00000094",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000",
+    "source": "libc.so"
+  },
+  {
+    "name": "atoi",
+    "arch": "ARM64",
+    "pattern": "FD7BBEA9FD030091E00300AA00000094",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000",
+    "source": "libc.so"
+  },
+  {
+    "name": "memcpy",
+    "arch": "ARM32",
+    "pattern": "2D402DE904B08DF20D10A0E10220A0E1",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "strcpy",
+    "arch": "ARM32",
+    "pattern": "2D402DE904B08DF20D00A0E10E10A0E1",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "strlen",
+    "arch": "ARM32",
+    "pattern": "003013E5030053E11EFF2FE1",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "strcmp",
+    "arch": "ARM32",
+    "pattern": "2D402DE904B08DF20020D1E50130D1E5",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "memset",
+    "arch": "ARM32",
+    "pattern": "08402DE90230A0E10020A0E10110A0E1",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    "source": "libc.so"
+  },
+  {
+    "name": "malloc",
+    "arch": "ARM32",
+    "pattern": "2D402DE904B08DF20040A0E1000000EB",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000",
+    "source": "libc.so"
+  },
+  {
+    "name": "free",
+    "arch": "ARM32",
+    "pattern": "2D402DE904B08DF20040A0E1000000EB",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000",
+    "source": "libc.so"
+  },
+  {
+    "name": "atoi",
+    "arch": "ARM32",
+    "pattern": "2D402DE904B08DF20040A0E1000000EB",
+    "mask": "FFFFFFFFFFFFFFFFFFFFFFFF00000000",
+    "source": "libc.so"
+  }
+]
