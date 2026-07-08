@@ -22,6 +22,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.button.MaterialButton
@@ -491,6 +494,9 @@ class MainActivity : AppCompatActivity() {
         dialog.setCanceledOnTouchOutside(false)
 
         val composeView = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@MainActivity)
+            setViewTreeViewModelStoreOwner(this@MainActivity)
+            setViewTreeSavedStateRegistryOwner(this@MainActivity)
             setContent {
                 MaterialTheme(
                     colorScheme = darkColorScheme(
@@ -527,6 +533,12 @@ class MainActivity : AppCompatActivity() {
         dialog.setContentView(composeView)
         dialog.show()
 
+        dialog.window?.decorView?.let { decorView ->
+            decorView.setViewTreeLifecycleOwner(this@MainActivity)
+            decorView.setViewTreeViewModelStoreOwner(this@MainActivity)
+            decorView.setViewTreeSavedStateRegistryOwner(this@MainActivity)
+        }
+
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
             setLayout(
@@ -549,6 +561,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         loadJob?.cancel()
+        loadingProgressState.value = null
 
         showLoadingDialog {
             loadJob?.cancel()
@@ -597,6 +610,9 @@ class MainActivity : AppCompatActivity() {
         dialog.setCanceledOnTouchOutside(false)
 
         val composeView = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@MainActivity)
+            setViewTreeViewModelStoreOwner(this@MainActivity)
+            setViewTreeSavedStateRegistryOwner(this@MainActivity)
             setContent {
                 MaterialTheme(
                     colorScheme = darkColorScheme(
@@ -621,6 +637,12 @@ class MainActivity : AppCompatActivity() {
 
         dialog.setContentView(composeView)
         dialog.show()
+
+        dialog.window?.decorView?.let { decorView ->
+            decorView.setViewTreeLifecycleOwner(this@MainActivity)
+            decorView.setViewTreeViewModelStoreOwner(this@MainActivity)
+            decorView.setViewTreeSavedStateRegistryOwner(this@MainActivity)
+        }
 
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)

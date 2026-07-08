@@ -20,6 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +52,15 @@ object ApkLibraryPicker {
         dialog.setOnDismissListener { onDismiss() }
 
         val composeView = ComposeView(context).apply {
+            (context as? androidx.lifecycle.LifecycleOwner)?.let {
+                setViewTreeLifecycleOwner(it)
+            }
+            (context as? androidx.lifecycle.ViewModelStoreOwner)?.let {
+                setViewTreeViewModelStoreOwner(it)
+            }
+            (context as? androidx.savedstate.SavedStateRegistryOwner)?.let {
+                setViewTreeSavedStateRegistryOwner(it)
+            }
             setContent {
                 MyApplicationTheme {
                     ApkLibraryPickerContent(
@@ -71,6 +83,18 @@ object ApkLibraryPicker {
 
         dialog.setContentView(composeView)
         dialog.show()
+
+        dialog.window?.decorView?.let { decorView ->
+            (context as? androidx.lifecycle.LifecycleOwner)?.let {
+                decorView.setViewTreeLifecycleOwner(it)
+            }
+            (context as? androidx.lifecycle.ViewModelStoreOwner)?.let {
+                decorView.setViewTreeViewModelStoreOwner(it)
+            }
+            (context as? androidx.savedstate.SavedStateRegistryOwner)?.let {
+                decorView.setViewTreeSavedStateRegistryOwner(it)
+            }
+        }
         
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)

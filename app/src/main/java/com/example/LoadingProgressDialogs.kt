@@ -62,7 +62,18 @@ fun LoadingProgressScreen(
             val details = progress?.detail ?: "Initializing parser..."
             val itemsProcessed = progress?.itemsProcessed ?: 0
 
+            val progressFraction = when (stage) {
+                LoadStage.READING_HEADER -> 0.15f
+                LoadStage.PARSING_SECTIONS -> 0.35f
+                LoadStage.EXTRACTING_SYMBOLS -> 0.55f
+                LoadStage.EXTRACTING_STRINGS -> 0.75f
+                LoadStage.INDEXING_DB -> 0.90f
+                LoadStage.DONE -> 1.0f
+                LoadStage.ERROR -> 1.0f
+            }
+
             LinearProgressIndicator(
+                progress = { progressFraction },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(6.dp)
@@ -73,9 +84,19 @@ fun LoadingProgressScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            val stageTitle = when (stage) {
+                LoadStage.READING_HEADER -> "READING ELF HEADER"
+                LoadStage.PARSING_SECTIONS -> "PARSING ELF SECTIONS"
+                LoadStage.EXTRACTING_SYMBOLS -> "EXTRACTING SYMBOLS"
+                LoadStage.EXTRACTING_STRINGS -> "EXTRACTING STRINGS"
+                LoadStage.INDEXING_DB -> "INDEXING DATABASE"
+                LoadStage.DONE -> "ANALYSIS COMPLETE"
+                LoadStage.ERROR -> "ANALYSIS ERROR"
+            }
+
             // Stage title
             Text(
-                text = stage.name.replace("_", " "),
+                text = stageTitle,
                 color = TextPrimary,
                 style = CodeTypography.monospaceMedium,
                 fontWeight = FontWeight.SemiBold,

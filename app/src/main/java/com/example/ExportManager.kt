@@ -48,7 +48,11 @@ object ExportManager {
         elfHeader: ElfParser.ElfHeader?,
         onProgress: (ExportProgress) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        var outputStream = java.io.OutputStream.nullOutputStream()
+        var outputStream: java.io.OutputStream = object : java.io.OutputStream() {
+            override fun write(b: Int) {}
+            override fun write(b: ByteArray) {}
+            override fun write(b: ByteArray, off: Int, len: Int) {}
+        }
         var writer: BufferedWriter? = null
         try {
             outputStream = context.contentResolver.openOutputStream(outputUri)
