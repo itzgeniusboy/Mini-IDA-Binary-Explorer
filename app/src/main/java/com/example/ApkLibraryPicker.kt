@@ -31,18 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
-
-// Theme colors matching the existing palette in colors.xml
-private val CyberBg = Color(0xFF090A0F)
-private val CyberSurface = Color(0xFF121420)
-private val CyberCard = Color(0xFF1A1D2E)
-private val CyberGreen = Color(0xFF00FF66)
-private val CyberCyan = Color(0xFF00E5FF)
-private val CyberPink = Color(0xFFFF007F)
-private val CyberTextPrimary = Color(0xFFF1F5F9)
-private val CyberTextSecondary = Color(0xFF94A3B8)
-private val CyberTextMuted = Color(0xFF64748B)
-private val CyberBorder = Color(0xFF2A2E45)
+import com.example.ui.theme.*
 
 object ApkLibraryPicker {
 
@@ -61,16 +50,7 @@ object ApkLibraryPicker {
 
         val composeView = ComposeView(context).apply {
             setContent {
-                MaterialTheme(
-                    colorScheme = darkColorScheme(
-                        background = CyberBg,
-                        surface = CyberSurface,
-                        primary = CyberGreen,
-                        secondary = CyberCyan,
-                        onBackground = CyberTextPrimary,
-                        onSurface = CyberTextPrimary
-                    )
-                ) {
+                MyApplicationTheme {
                     ApkLibraryPickerContent(
                         context = context,
                         apkUri = apkUri,
@@ -146,40 +126,38 @@ fun ApkLibraryPickerContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
-                .border(1.dp, CyberBorder, RoundedCornerShape(12.dp))
+                .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
                 .testTag("apk_picker_dialog_card"),
             shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = CyberSurface)
+            colors = CardDefaults.cardColors(containerColor = DarkSurface)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
+                    .padding(20.dp)
             ) {
                 // Header
                 Text(
                     text = "SELECT NATIVE LIBRARY",
-                    color = CyberGreen,
-                    fontSize = 16.sp,
+                    color = CyberPrimary,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
                         .testTag("apk_picker_title")
                 )
                 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 
                 Text(
                     text = "Multiple embedded libraries (.so) were detected inside the APK. Please pick one to inspect.",
-                    color = CyberTextSecondary,
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                     textAlign = TextAlign.Center
                 )
                 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(20.dp))
                 
                 // Native Library List (Expanded heights capped at 320dp for usability)
                 Box(modifier = Modifier.heightIn(max = 320.dp)) {
@@ -192,10 +170,9 @@ fun ApkLibraryPickerContent(
                         ) {
                             Text(
                                 text = "NO NATIVE LIBRARIES FOUND (.so)",
-                                color = CyberPink,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp
+                                color = CyberError,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     } else {
@@ -212,8 +189,8 @@ fun ApkLibraryPickerContent(
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .background(CyberCard, RoundedCornerShape(6.dp))
-                                            .border(1.dp, if (isPreferred) CyberGreen else CyberBorder, RoundedCornerShape(6.dp))
+                                            .background(DarkCard, RoundedCornerShape(8.dp))
+                                            .border(1.dp, if (isPreferred) CyberSuccess else DarkBorder, RoundedCornerShape(8.dp))
                                             .clickable { expandedStates[abi] = !isExpanded }
                                             .padding(12.dp)
                                             .testTag("abi_header_$abi"),
@@ -223,41 +200,39 @@ fun ApkLibraryPickerContent(
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
                                                     text = abi.uppercase(),
-                                                    color = if (isPreferred) CyberGreen else CyberTextPrimary,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    fontSize = 14.sp
+                                                    color = if (isPreferred) CyberSuccess else TextPrimary,
+                                                    style = CodeTypography.monospaceLarge,
+                                                    fontWeight = FontWeight.Bold
                                                 )
                                                 if (isPreferred) {
                                                     Spacer(modifier = Modifier.width(8.dp))
                                                     Box(
                                                         modifier = Modifier
-                                                            .background(CyberGreen.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                                                            .border(0.5.dp, CyberGreen, RoundedCornerShape(4.dp))
+                                                            .background(CyberSuccess.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                                            .border(0.5.dp, CyberSuccess, RoundedCornerShape(4.dp))
                                                             .padding(horizontal = 6.dp, vertical = 2.dp)
                                                     ) {
                                                         Text(
                                                             text = "RECOMMENDED",
-                                                            color = CyberGreen,
-                                                            fontSize = 9.sp,
+                                                            color = CyberSuccess,
+                                                            style = CodeTypography.monospaceSmall,
                                                             fontWeight = FontWeight.Bold,
-                                                            fontFamily = FontFamily.Monospace
+                                                            fontSize = 9.sp
                                                         )
                                                     }
                                                 }
                                             }
                                             Text(
                                                 text = "${libs.size} libraries found",
-                                                color = CyberTextMuted,
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace
+                                                color = TextMuted,
+                                                style = MaterialTheme.typography.bodyMedium
                                             )
                                         }
                                         
                                         Icon(
                                             imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                             contentDescription = if (isExpanded) "Collapse" else "Expand",
-                                            tint = if (isPreferred) CyberGreen else CyberTextSecondary
+                                            tint = if (isPreferred) CyberSuccess else TextSecondary
                                         )
                                     }
                                 }
@@ -268,8 +243,8 @@ fun ApkLibraryPickerContent(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(horizontal = 8.dp)
-                                                .background(CyberBg, RoundedCornerShape(4.dp))
-                                                .border(0.5.dp, CyberBorder, RoundedCornerShape(4.dp))
+                                                .background(DarkBg, RoundedCornerShape(6.dp))
+                                                .border(0.5.dp, DarkBorder, RoundedCornerShape(6.dp))
                                                 .clickable {
                                                     if (extractionProgress == null) {
                                                         extractingLibName = lib.libraryName
@@ -307,24 +282,22 @@ fun ApkLibraryPickerContent(
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(
                                                     text = lib.libraryName,
-                                                    color = CyberCyan,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    fontSize = 13.sp
+                                                    color = CyberPrimary,
+                                                    style = CodeTypography.monospaceLarge,
+                                                    fontWeight = FontWeight.SemiBold
                                                 )
                                                 Text(
                                                     text = "Path: ${lib.entryName}",
-                                                    color = CyberTextMuted,
-                                                    fontSize = 10.sp,
-                                                    fontFamily = FontFamily.Monospace
+                                                    color = TextMuted,
+                                                    style = CodeTypography.monospaceSmall,
+                                                    maxLines = 1
                                                 )
                                             }
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
                                                 text = formatBytes(lib.sizeBytes),
-                                                color = CyberTextSecondary,
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace
+                                                color = TextSecondary,
+                                                style = CodeTypography.monospaceMedium
                                             )
                                         }
                                     }
@@ -334,7 +307,7 @@ fun ApkLibraryPickerContent(
                     }
                 }
                 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(20.dp))
                 
                 // Buttons
                 Row(
@@ -348,10 +321,9 @@ fun ApkLibraryPickerContent(
                     ) {
                         Text(
                             text = "CANCEL",
-                            color = if (extractionProgress == null) CyberTextSecondary else CyberTextMuted,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
+                            color = if (extractionProgress == null) TextSecondary else TextMuted,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -364,7 +336,7 @@ fun ApkLibraryPickerContent(
                 modifier = Modifier
                     .matchParentSize()
                     .padding(16.dp)
-                    .background(CyberBg.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
+                    .background(DarkBg.copy(alpha = 0.85f), RoundedCornerShape(12.dp))
                     .clickable(enabled = false) {}, // Scrim
                 contentAlignment = Alignment.Center
             ) {
@@ -374,7 +346,7 @@ fun ApkLibraryPickerContent(
                 ) {
                     CircularProgressIndicator(
                         progress = { progress },
-                        color = CyberGreen,
+                        color = CyberPrimary,
                         strokeWidth = 4.dp,
                     )
                     
@@ -382,10 +354,9 @@ fun ApkLibraryPickerContent(
                     
                     Text(
                         text = "EXTRACTING ${extractingLibName?.uppercase() ?: "LIBRARY"}...",
-                        color = CyberGreen,
+                        color = CyberPrimary,
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 14.sp,
                         textAlign = TextAlign.Center
                     )
                     
@@ -393,9 +364,8 @@ fun ApkLibraryPickerContent(
                     
                     Text(
                         text = "Progress: ${(progress * 100).toInt()}%",
-                        color = CyberTextSecondary,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp
+                        color = TextSecondary,
+                        style = CodeTypography.monospaceMedium
                     )
                 }
             }

@@ -331,7 +331,7 @@
             <com.google.android.material.tabs.TabLayout
                 android:id="@+id/tab_layout"
                 android:layout_width="match_parent"
-                android:layout_height="48dp"
+                android:layout_height="wrap_content"
                 android:background="@color/dark_bg"
                 app:tabBackground="@color/dark_bg"
                 app:tabGravity="fill"

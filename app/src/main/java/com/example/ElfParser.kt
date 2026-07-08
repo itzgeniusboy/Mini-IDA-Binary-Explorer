@@ -303,13 +303,16 @@ class ElfParser(private val buffer: ByteBuffer) {
     /**
      * Extracts printable ASCII strings of length >= 4 with a max limit of 50,000 strings
      */
-    fun extractStrings(maxLimit: Int = 50000): List<ElfString> {
+    fun extractStrings(maxLimit: Int = 50000, onProgress: ((Int) -> Unit)? = null): List<ElfString> {
         val stringsList = mutableListOf<ElfString>()
         var start = -1
         val size = buffer.capacity()
         var totalCount = 0
 
         for (i in 0 until size) {
+            if (i % 500000 == 0 && i > 0) {
+                onProgress?.invoke(i)
+            }
             val b = buffer.get(i).toInt() and 0xFF
             val isPrintable = b in 32..126
 
@@ -370,7 +373,7 @@ class ElfParser(private val buffer: ByteBuffer) {
     /**
      * Parses ELF symbols (Functions) if present, or provides mock ones if none are found.
      */
-    fun parseSymbols(): List<ElfFunction> {
+    fun parseSymbols(onProgress: ((Int) -> Unit)? = null): List<ElfFunction> {
         val functions = mutableListOf<ElfFunction>()
         val header = parseHeader()
         if (!header.isElf) return emptyList()
@@ -488,6 +491,9 @@ class ElfParser(private val buffer: ByteBuffer) {
             if (targetSymOffset != 0L && targetSymSize != 0L && targetSymEntSize != 0L) {
                 val count = (targetSymSize / targetSymEntSize).toInt()
                 for (i in 0 until count) {
+                    if (i % 500 == 0 && i > 0) {
+                        onProgress?.invoke(i)
+                    }
                     val entryOffset = targetSymOffset + i * targetSymEntSize
                     if (entryOffset + targetSymEntSize > localBuffer.capacity()) break
 

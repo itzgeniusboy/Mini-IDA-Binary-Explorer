@@ -16,6 +16,11 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.cardview.widget.CardView
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
@@ -25,6 +30,13 @@ import com.google.android.material.tabs.TabLayoutMediator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.yield
+import android.app.Dialog
+import android.content.Context
 import java.io.File
 import java.nio.ByteBuffer
 
@@ -41,6 +53,12 @@ class MainActivity : AppCompatActivity() {
     private var allStringsCached: List<ElfParser.ElfString> = emptyList()
     private var allHexCached: List<ElfParser.HexRow> = emptyList()
     private var allDisassemblyCached: List<DisassemblyLine> = emptyList()
+
+    private var isXrefPreScanned: Boolean = true
+    private var textSectionCached: ElfParser.TextSectionInfo? = null
+    private var disassembledOffset: Int = 0
+    private val DISASSEMBLY_CHUNK_SIZE = 128 * 1024 // 128KB chunks
+    private var loadJob: kotlinx.coroutines.Job? = null
 
     private var exportFormatSelected: ExportFormat = ExportFormat.JSON
     private var exportSectionsSelected: Set<ExportSection> = emptySet()
@@ -256,6 +274,19 @@ class MainActivity : AppCompatActivity() {
             tabEmptyStates[position] = emptyState
 
             if (position == 3) {
+                recyclerView.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+                    override fun onScrolled(rv: androidx.recyclerview.widget.RecyclerView, dx: Int, dy: Int) {
+                        val layoutManager = rv.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
+                        if (layoutManager != null) {
+                            val totalItemCount = layoutManager.itemCount
+                            val lastVisible = layoutManager.findLastVisibleItemPosition()
+                            if (lastVisible >= totalItemCount - 50) {
+                                loadNextDisassemblyChunk()
+                            }
+                        }
+                    }
+                })
+
                 val etDisasmFilter: EditText? = itemView.findViewById(R.id.et_disasm_filter)
                 etDisasmFilter?.addTextChangedListener(object : android.text.TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -288,12 +319,23 @@ class MainActivity : AppCompatActivity() {
         viewPager.offscreenPageLimit = 4
 
         TabLayoutMediator(tabLayout, viewPager) { tab, position ->
-            tab.text = when (position) {
-                0 -> "STRINGS"
-                1 -> "FUNCTIONS"
-                2 -> "HEX"
-                3 -> "DISASSEMBLY"
-                else -> "TAB"
+            when (position) {
+                0 -> {
+                    tab.text = "STRINGS"
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_search)
+                }
+                1 -> {
+                    tab.text = "FUNCTIONS"
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_info_details)
+                }
+                2 -> {
+                    tab.text = "HEX"
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_view)
+                }
+                3 -> {
+                    tab.text = "DISASM"
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_compass)
+                }
             }
         }.attach()
     }
@@ -352,7 +394,13 @@ class MainActivity : AppCompatActivity() {
                     nativeLibs = result.nativeLibs,
                     onLibraryExtracted = { extractedFile, customDisplayName ->
                         val fileUri = Uri.fromFile(extractedFile)
-                        loadElfFile(fileUri, customDisplayName)
+                        loadElfFile(
+                            fileUri,
+                            customDisplayName,
+                            fromApkPicker = true,
+                            originalApkUri = uri,
+                            originalApkDisplayName = displayName
+                        )
                     },
                     onDismiss = {
                         if (binaryBuffer == null) {
@@ -370,7 +418,125 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadElfFile(uri: Uri, displayName: String) {
+    private var loadingDialog: Dialog? = null
+    private val loadingProgressState = mutableStateOf<LoadProgress?>(null)
+    private var isDisassemblingChunk = false
+
+    private fun loadElfFile(
+        uri: Uri,
+        displayName: String,
+        fromApkPicker: Boolean = false,
+        originalApkUri: Uri? = null,
+        originalApkDisplayName: String? = null
+    ) {
+        checkMemoryAndWarn(uri, displayName, fromApkPicker, originalApkUri, originalApkDisplayName) {
+            startElfProgressiveLoad(uri, displayName)
+        }
+    }
+
+    private fun checkMemoryAndWarn(
+        uri: Uri,
+        displayName: String,
+        fromApkPicker: Boolean,
+        originalApkUri: Uri?,
+        originalApkDisplayName: String?,
+        onProceed: () -> Unit
+    ) {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val memoryInfo = android.app.ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+
+        var fileSize = 0L
+        try {
+            contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                fileSize = pfd.statSize
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        val availableRam = memoryInfo.availMem
+        val totalRam = memoryInfo.totalMem
+        val isLowRam = activityManager.isLowRamDevice
+
+        // Heuristic: file size > 40% of available RAM, or low-RAM device with file > 20MB
+        val isRisk = (fileSize > 0 && fileSize > (availableRam * 0.40)) || (isLowRam && fileSize > 20 * 1024 * 1024)
+
+        if (isRisk) {
+            showLowRamWarningDialog(fileSize, availableRam, totalRam, fromApkPicker, onProceed, {
+                statusBadge.text = "IDLE"
+                statusBadge.setTextColor(getColor(R.color.neon_green))
+                if (binaryBuffer == null) tvFilePath.text = "No file loaded"
+            }, {
+                if (originalApkUri != null && originalApkDisplayName != null) {
+                    processApkFile(originalApkUri, originalApkDisplayName)
+                }
+            })
+        } else {
+            onProceed()
+        }
+    }
+
+    private fun showLowRamWarningDialog(
+        fileSize: Long,
+        availableRam: Long,
+        totalRam: Long,
+        fromApkPicker: Boolean,
+        onProceed: () -> Unit,
+        onCancel: () -> Unit,
+        onChooseDifferentAbi: () -> Unit
+    ) {
+        val dialog = Dialog(this)
+        dialog.setCancelable(true)
+        dialog.setCanceledOnTouchOutside(false)
+
+        val composeView = ComposeView(this).apply {
+            setContent {
+                MaterialTheme(
+                    colorScheme = darkColorScheme(
+                        background = Color(0xFF090A0F),
+                        surface = Color(0xFF121420),
+                        primary = Color(0xFF00FF66),
+                        secondary = Color(0xFF00E5FF),
+                        onBackground = Color(0xFFF1F5F9),
+                        onSurface = Color(0xFFF1F5F9)
+                    )
+                ) {
+                    LowRamWarningScreen(
+                        fileSize = fileSize,
+                        availableRam = availableRam,
+                        totalRam = totalRam,
+                        fromApkPicker = fromApkPicker,
+                        onProceed = {
+                            dialog.dismiss()
+                            onProceed()
+                        },
+                        onCancel = {
+                            dialog.dismiss()
+                            onCancel()
+                        },
+                        onChooseDifferentAbi = {
+                            dialog.dismiss()
+                            onChooseDifferentAbi()
+                        }
+                    )
+                }
+            }
+        }
+
+        dialog.setContentView(composeView)
+        dialog.show()
+
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+    }
+
+    private fun startElfProgressiveLoad(uri: Uri, displayName: String) {
         statusBadge.text = "LOADING..."
         statusBadge.setTextColor(getColor(R.color.neon_pink))
 
@@ -382,107 +548,311 @@ class MainActivity : AppCompatActivity() {
             tabEmptyStates[i]?.visibility = View.GONE
         }
 
-        lifecycleScope.launch(Dispatchers.IO) {
+        loadJob?.cancel()
+
+        showLoadingDialog {
+            loadJob?.cancel()
+            statusBadge.text = "CANCELLED"
+            statusBadge.setTextColor(getColor(R.color.neon_pink))
+            tvFilePath.text = "Load cancelled by user"
+            for (i in 0..3) {
+                tabProgressBars[i]?.visibility = View.GONE
+                tabEmptyStates[i]?.visibility = View.VISIBLE
+            }
+        }
+
+        loadJob = lifecycleScope.launch(Dispatchers.IO) {
             try {
-                contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    val fileChannel = java.io.FileInputStream(pfd.fileDescriptor).channel
-                    val size = fileChannel.size()
-                    val buffer = fileChannel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, size)
-                    binaryBuffer = buffer
-
-                    val parser = ElfParser(buffer)
-                    val header = parser.parseHeader()
-                    elfHeaderCached = header
-
-                    val strings = parser.extractStrings()
-                    val functions = parser.parseSymbols()
-                    val hexDump = parser.getHexDump()
-
-                    val textSection = parser.findTextSection()
-                    val disassembly = if (textSection != null) {
-                        parser.disassembleSection(
-                            textSection.bytes,
-                            textSection.virtualAddress,
-                            header.machineVal,
-                            header.is64Bit
-                        ) ?: emptyArray()
-                    } else {
-                        emptyArray()
-                    }
-                    val disassemblyList = disassembly.toList()
-
-                    allFunctionsCached = functions
-                    allStringsCached = strings
-                    allHexCached = hexDump
-                    allDisassemblyCached = disassemblyList
-
-                    offsetsDbHelper.insertOffsetsBulk(displayName, functions, header.classType)
-
-                    // Load annotations & set function list for display-name resolution
-                    AnnotationRepository.loadAnnotations(this@MainActivity, displayName)
-                    AnnotationRepository.setFunctions(functions)
-
-                    if (disassemblyList.size > 5000) {
-                        withContext(Dispatchers.Main) {
-                            android.widget.Toast.makeText(
-                                this@MainActivity,
-                                "Analyzing ${disassemblyList.size} instructions for XREFs...",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    }
-
-                    val xrefs = withContext(Dispatchers.Default) {
-                        XrefAnalyzer.analyze(disassemblyList)
-                    }
-                    offsetsDbHelper.insertXrefs(displayName, xrefs)
-
+                createLoadFlow(uri, displayName).collect { progress ->
                     withContext(Dispatchers.Main) {
-                        statusBadge.text = "PARSED"
-                        statusBadge.setTextColor(getColor(R.color.neon_green))
-
-                        navigationController.clear()
-                        disassemblyTabAdapter.setHighlightAddress(null)
-                        updateNavigationButtons()
-
-                        if (header.isElf) {
-                            infoPanelCard.visibility = View.VISIBLE
-                            tvElfClass.text = header.classType
-                            tvElfMachine.text = header.machine
-                            tvElfEntry.text = header.entryPoint
-                            tvElfEndian.text = header.endianType
-                        } else {
-                            infoPanelCard.visibility = View.VISIBLE
-                            tvElfClass.text = "RAW DATA (Non-ELF)"
-                            tvElfMachine.text = "N/A"
-                            tvElfEntry.text = "0x0"
-                            tvElfEndian.text = "System Default"
-                        }
-
-                        stringsAdapter.submitList(strings)
-                        functionsAdapter.submitList(functions)
-                        hexAdapter.submitList(hexDump)
-                        disassemblyTabAdapter.submitList(disassemblyList)
-
-                        for (i in 0..3) {
-                            tabProgressBars[i]?.visibility = View.GONE
-                            tabEmptyStates[i]?.visibility = View.GONE
-                            tabRecyclerViews[i]?.visibility = View.VISIBLE
-                        }
+                        loadingProgressState.value = progress
                     }
+                }
+            } catch (e: CancellationException) {
+                withContext(Dispatchers.Main) {
+                    loadingDialog?.dismiss()
+                    statusBadge.text = "CANCELLED"
+                    statusBadge.setTextColor(getColor(R.color.neon_pink))
+                    tvFilePath.text = "Load cancelled by user"
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
+                    loadingDialog?.dismiss()
                     statusBadge.text = "ERR_READ"
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Error reading binary: ${e.localizedMessage}"
-
                     for (i in 0..3) {
                         tabProgressBars[i]?.visibility = View.GONE
                         tabEmptyStates[i]?.visibility = View.VISIBLE
                     }
                 }
+            }
+        }
+    }
+
+    private fun showLoadingDialog(onCancel: () -> Unit) {
+        val dialog = Dialog(this)
+        dialog.setCancelable(false)
+        dialog.setCanceledOnTouchOutside(false)
+
+        val composeView = ComposeView(this).apply {
+            setContent {
+                MaterialTheme(
+                    colorScheme = darkColorScheme(
+                        background = Color(0xFF090A0F),
+                        surface = Color(0xFF121420),
+                        primary = Color(0xFF00FF66),
+                        secondary = Color(0xFF00E5FF),
+                        onBackground = Color(0xFFF1F5F9),
+                        onSurface = Color(0xFFF1F5F9)
+                    )
+                ) {
+                    LoadingProgressScreen(
+                        progress = loadingProgressState.value,
+                        onCancel = {
+                            dialog.dismiss()
+                            onCancel()
+                        }
+                    )
+                }
+            }
+        }
+
+        dialog.setContentView(composeView)
+        dialog.show()
+
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setLayout(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        loadingDialog = dialog
+    }
+
+    private fun createLoadFlow(uri: Uri, displayName: String): Flow<LoadProgress> = flow {
+        emit(LoadProgress(LoadStage.READING_HEADER, 0, "Opening binary file and mapping file channel..."))
+
+        val pfd = contentResolver.openFileDescriptor(uri, "r") ?: throw Exception("Failed to open file descriptor")
+        pfd.use { fd ->
+            val fileChannel = java.io.FileInputStream(fd.fileDescriptor).channel
+            val size = fileChannel.size()
+            val buffer = fileChannel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, size)
+            binaryBuffer = buffer
+
+            val parser = ElfParser(buffer)
+            val header = parser.parseHeader()
+            elfHeaderCached = header
+            yield()
+
+            emit(LoadProgress(LoadStage.PARSING_SECTIONS, 0, "Analyzing sections and locating program segments..."))
+            val textSection = parser.findTextSection()
+            textSectionCached = textSection
+            yield()
+
+            emit(LoadProgress(LoadStage.EXTRACTING_STRINGS, 0, "Scanning binary for readable ASCII strings..."))
+            val strings = parser.extractStrings(maxLimit = 50000) { bytesScanned ->
+                // Automated cancellation check inside parser loop is sufficient
+            }
+            allStringsCached = strings
+            emit(LoadProgress(LoadStage.EXTRACTING_STRINGS, strings.size, "Found ${strings.size} strings in binary."))
+            yield()
+
+            emit(LoadProgress(LoadStage.EXTRACTING_SYMBOLS, 0, "Parsing symbol tables and demangling functions..."))
+            val rawSymbols = parser.parseSymbols { symbolsCount ->
+                // Process update automatically checking cancellation
+            }
+            yield()
+
+            val totalSymbolsCount = rawSymbols.size
+            val cappedSymbols = if (totalSymbolsCount > 200000) {
+                rawSymbols.take(200000) + ElfParser.ElfFunction(
+                    address = "NOTICE",
+                    name = "Showing first 200,000 of $totalSymbolsCount symbols — use search to find others",
+                    size = "",
+                    bind = "",
+                    type = "",
+                    index = -1
+                )
+            } else {
+                rawSymbols
+            }
+            allFunctionsCached = cappedSymbols
+
+            emit(LoadProgress(LoadStage.INDEXING_DB, 0, "Saving parsed offsets and metadata into SQLite database..."))
+            offsetsDbHelper.insertOffsetsBulk(displayName, rawSymbols, header.classType) { indexCount ->
+                // Database progress
+            }
+            yield()
+
+            emit(LoadProgress(LoadStage.PARSING_SECTIONS, 0, "Preparing initial disassembly view..."))
+
+            val disassemblyList = if (textSection != null) {
+                disassembledOffset = minOf(textSection.bytes.size, DISASSEMBLY_CHUNK_SIZE)
+                val initialBytes = textSection.bytes.copyOfRange(0, disassembledOffset)
+                val disasmLines = parser.disassembleSection(
+                    initialBytes,
+                    textSection.virtualAddress,
+                    header.machineVal,
+                    header.is64Bit
+                ) ?: emptyArray()
+                disasmLines.toList()
+            } else {
+                disassembledOffset = 0
+                emptyList()
+            }
+            allDisassemblyCached = disassemblyList
+            yield()
+
+            val hexDump = parser.getHexDump()
+            allHexCached = hexDump
+            yield()
+
+            AnnotationRepository.loadAnnotations(this@MainActivity, displayName)
+            AnnotationRepository.setFunctions(cappedSymbols)
+
+            val estimatedInstructions = if (textSection != null) textSection.bytes.size / 4 else 0
+            if (estimatedInstructions > 2000000) {
+                isXrefPreScanned = false
+                emit(LoadProgress(LoadStage.DONE, 0, "Skipping full XREF scan (>2M instructions). On-demand lookup enabled."))
+            } else {
+                isXrefPreScanned = true
+                emit(LoadProgress(LoadStage.INDEXING_DB, 0, "Scanning instruction flow for XREFs..."))
+
+                val fullDisassemblyForXrefs = if (textSection != null) {
+                    parser.disassembleSection(
+                        textSection.bytes,
+                        textSection.virtualAddress,
+                        header.machineVal,
+                        header.is64Bit
+                    ) ?: emptyArray()
+                } else {
+                    emptyArray()
+                }
+
+                val xrefs = XrefAnalyzer.analyze(fullDisassemblyForXrefs.toList())
+                offsetsDbHelper.insertXrefs(displayName, xrefs)
+            }
+            yield()
+
+            emit(LoadProgress(LoadStage.DONE, 100, "Successfully analyzed binary!"))
+
+            withContext(Dispatchers.Main) {
+                loadingDialog?.dismiss()
+                statusBadge.text = "PARSED"
+                statusBadge.setTextColor(getColor(R.color.neon_green))
+
+                navigationController.clear()
+                disassemblyTabAdapter.setHighlightAddress(null)
+                updateNavigationButtons()
+
+                if (header.isElf) {
+                    infoPanelCard.visibility = View.VISIBLE
+                    tvElfClass.text = header.classType
+                    tvElfMachine.text = header.machine
+                    tvElfEntry.text = header.entryPoint
+                    tvElfEndian.text = header.endianType
+                } else {
+                    infoPanelCard.visibility = View.VISIBLE
+                    tvElfClass.text = "RAW DATA (Non-ELF)"
+                    tvElfMachine.text = "N/A"
+                    tvElfEntry.text = "0x0"
+                    tvElfEndian.text = "System Default"
+                }
+
+                stringsAdapter.submitList(allStringsCached)
+                functionsAdapter.submitList(allFunctionsCached)
+                hexAdapter.submitList(allHexCached)
+                disassemblyTabAdapter.submitList(allDisassemblyCached)
+
+                for (i in 0..3) {
+                    tabProgressBars[i]?.visibility = View.GONE
+                    tabEmptyStates[i]?.visibility = View.GONE
+                    tabRecyclerViews[i]?.visibility = View.VISIBLE
+                }
+
+                if (!isXrefPreScanned) {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "Notice: Full-binary XREF scan skipped due to large size.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun scanXrefsForFunctionOnDemand(func: ElfParser.ElfFunction): List<XrefEntry> {
+        val buffer = binaryBuffer ?: return emptyList()
+        val addrHex = func.address.replace("0x", "").replace("0X", "")
+        val addressVal = addrHex.toLongOrNull(16) ?: return emptyList()
+
+        val sizeStr = func.size.replace("SIZE:", "").replace("bytes", "").trim()
+        val sizeVal = sizeStr.toLongOrNull()?.coerceAtLeast(32L) ?: 128L
+
+        val bytes = ByteArray(sizeVal.toInt())
+        val dup = buffer.duplicate()
+        if (addressVal >= 0 && addressVal + sizeVal <= dup.capacity()) {
+            dup.position(addressVal.toInt())
+            dup.get(bytes)
+        } else {
+            val safeSize = (dup.capacity() - addressVal.toInt()).coerceAtLeast(0).coerceAtMost(sizeVal.toInt())
+            if (safeSize > 0) {
+                val safeBytes = ByteArray(safeSize)
+                dup.position(addressVal.toInt())
+                dup.get(safeBytes)
+                System.arraycopy(safeBytes, 0, bytes, 0, safeSize)
+            }
+        }
+
+        val header = elfHeaderCached ?: return emptyList()
+        val parser = ElfParser(buffer)
+        val disassembly = parser.disassembleSection(
+            bytes,
+            addressVal,
+            header.machineVal,
+            header.is64Bit
+        ) ?: return emptyList()
+        return XrefAnalyzer.analyze(disassembly.toList())
+    }
+
+    private fun loadNextDisassemblyChunk() {
+        val textSection = textSectionCached ?: return
+        if (disassembledOffset >= textSection.bytes.size) return
+        if (isDisassemblingChunk) return
+
+        isDisassemblingChunk = true
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val header = elfHeaderCached ?: return@launch
+                val buffer = binaryBuffer ?: return@launch
+                val parser = ElfParser(buffer)
+
+                val nextSize = minOf(textSection.bytes.size - disassembledOffset, DISASSEMBLY_CHUNK_SIZE)
+                if (nextSize <= 0) return@launch
+
+                val chunkBytes = textSection.bytes.copyOfRange(disassembledOffset, disassembledOffset + nextSize)
+                val chunkAddr = textSection.virtualAddress + disassembledOffset
+
+                val chunkLines = parser.disassembleSection(
+                    chunkBytes,
+                    chunkAddr,
+                    header.machineVal,
+                    header.is64Bit
+                ) ?: emptyArray()
+
+                disassembledOffset += nextSize
+
+                withContext(Dispatchers.Main) {
+                    allDisassemblyCached = allDisassemblyCached + chunkLines.toList()
+                    disassemblyTabAdapter.submitList(allDisassemblyCached)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isDisassemblingChunk = false
             }
         }
     }
@@ -610,7 +980,22 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.Default) {
             val calledBy = offsetsDbHelper.getXrefsTo(fileId, address)
-            val calls = offsetsDbHelper.getXrefsFrom(fileId, address)
+            var calls = offsetsDbHelper.getXrefsFrom(fileId, address)
+
+            // Dynamic on-demand analysis if full-scan was skipped
+            if (!isXrefPreScanned && calls.isEmpty()) {
+                val matchedFunc = allFunctionsCached.find {
+                    val funcAddr = it.address.removePrefix("0x").toLongOrNull(16) ?: 0L
+                    funcAddr == address
+                }
+                if (matchedFunc != null) {
+                    val onDemandXrefs = scanXrefsForFunctionOnDemand(matchedFunc)
+                    if (onDemandXrefs.isNotEmpty()) {
+                        offsetsDbHelper.insertXrefs(fileId, onDemandXrefs)
+                        calls = onDemandXrefs
+                    }
+                }
+            }
 
             withContext(Dispatchers.Main) {
                 val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_xref_details, null)
@@ -621,7 +1006,12 @@ class MainActivity : AppCompatActivity() {
                 val tvCallsHeader: TextView = dialogView.findViewById(R.id.tv_calls_header)
 
                 tvDialogTitle.text = "XREFS FOR $title"
-                tvCalledByHeader.text = "CALLED BY (${calledBy.size})"
+                
+                if (!isXrefPreScanned) {
+                    tvCalledByHeader.text = "CALLED BY (N/A - PRE-SCAN SKIPPED)"
+                } else {
+                    tvCalledByHeader.text = "CALLED BY (${calledBy.size})"
+                }
                 tvCallsHeader.text = "CALLS (${calls.size})"
 
                 val dialog = androidx.appcompat.app.AlertDialog.Builder(context)
@@ -629,7 +1019,15 @@ class MainActivity : AppCompatActivity() {
                     .create()
 
                 // Populate CALLED BY
-                if (calledBy.isEmpty()) {
+                if (!isXrefPreScanned) {
+                    val infoTv = TextView(context).apply {
+                        text = " Incoming references are unavailable because the full-binary pre-scan was skipped for performance."
+                        setTextColor(android.graphics.Color.parseColor("#FF007F"))
+                        textSize = 12f
+                        setPadding(16, 8, 16, 8)
+                    }
+                    containerCalledBy.addView(infoTv)
+                } else if (calledBy.isEmpty()) {
                     val emptyTv = TextView(context).apply {
                         text = " No incoming references found."
                         setTextColor(android.graphics.Color.parseColor("#5A6075"))

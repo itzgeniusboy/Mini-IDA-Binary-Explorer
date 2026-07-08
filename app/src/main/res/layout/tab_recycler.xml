@@ -36,38 +36,38 @@
         android:layout_gravity="center"
         android:gravity="center"
         android:orientation="vertical"
-        android:padding="24dp">
+        android:padding="32dp">
 
         <TextView
             android:id="@+id/empty_icon"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:text="[ ! ]"
-            android:textColor="@color/neon_pink"
-            android:textSize="32sp"
-            android:textStyle="bold" />
+            android:text="📂"
+            android:textColor="@color/text_muted"
+            android:textSize="40sp" />
 
         <TextView
             android:id="@+id/empty_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:fontFamily="monospace"
+            android:layout_marginTop="16dp"
+            android:fontFamily="sans-serif-medium"
             android:text="NO BINARY LOADED"
-            android:textColor="@color/text_secondary"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.05" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:fontFamily="monospace"
+            android:layout_marginTop="6dp"
+            android:fontFamily="sans-serif"
             android:gravity="center"
             android:text="Click above to open and parse\na shared object library or ELF binary."
-            android:textColor="@color/text_muted"
-            android:textSize="11sp" />
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp"
+            android:lineSpacingExtra="3dp" />
     </LinearLayout>
 
 </FrameLayout>

@@ -74,7 +74,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         onCreate(db)
     }
 
-    fun insertOffsetsBulk(fileIdentifier: String, functions: List<ElfParser.ElfFunction>, archType: String) {
+    fun insertOffsetsBulk(fileIdentifier: String, functions: List<ElfParser.ElfFunction>, archType: String, onProgress: ((Int) -> Unit)? = null) {
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -84,7 +84,10 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
             val query = "INSERT INTO $TABLE_OFFSETS ($COLUMN_OFFSET_HEX, $COLUMN_SYMBOL_NAME, $COLUMN_ARCH_TYPE, $COLUMN_FILE_IDENTIFIER) VALUES (?, ?, ?, ?)"
             val statement = db.compileStatement(query)
             
-            for (func in functions) {
+            for ((index, func) in functions.withIndex()) {
+                if (index % 1000 == 0 && index > 0) {
+                    onProgress?.invoke(index)
+                }
                 statement.clearBindings()
                 statement.bindString(1, func.address)
                 statement.bindString(2, func.name)

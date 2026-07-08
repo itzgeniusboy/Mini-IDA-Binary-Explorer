@@ -4,6 +4,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.graphics.Typeface
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
@@ -28,6 +33,13 @@ class StringsAdapter : ListAdapter<ElfParser.ElfString, StringsAdapter.ViewHolde
         holder.tvOffset.text = item.offset
         holder.tvLen.text = "LEN: ${item.length}"
         holder.tvValue.text = item.value
+
+        // Alternating Card backgrounds for polished visual scanning
+        (holder.itemView as? androidx.cardview.widget.CardView)?.setCardBackgroundColor(
+            android.content.res.ColorStateList.valueOf(
+                android.graphics.Color.parseColor(if (position % 2 == 0) "#121420" else "#1A1D2E")
+            )
+        )
     }
 
     companion object DiffCallback : DiffUtil.ItemCallback<ElfParser.ElfString>() {
@@ -63,6 +75,21 @@ class FunctionsAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = getItem(position)
+        if (item.address == "NOTICE") {
+            holder.tvAddress.text = ""
+            holder.tvMeta.text = ""
+            holder.tvName.text = item.name
+            holder.tvSize.text = ""
+            holder.tvIndex.text = ""
+            holder.tvCommentIndicator.visibility = View.GONE
+            holder.itemView.setOnClickListener(null)
+            holder.itemView.setOnLongClickListener(null)
+            (holder.itemView as? androidx.cardview.widget.CardView)?.setCardBackgroundColor(
+                android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#121420"))
+            )
+            return
+        }
+
         holder.tvAddress.text = item.address
         holder.tvMeta.text = "${item.type} [${item.bind}]"
         
@@ -87,6 +114,13 @@ class FunctionsAdapter(
         holder.itemView.setOnLongClickListener {
             onItemLongClick?.invoke(item) ?: false
         }
+
+        // Alternating Card backgrounds for polished visual scanning
+        (holder.itemView as? androidx.cardview.widget.CardView)?.setCardBackgroundColor(
+            android.content.res.ColorStateList.valueOf(
+                android.graphics.Color.parseColor(if (position % 2 == 0) "#121420" else "#1A1D2E")
+            )
+        )
     }
 
     companion object DiffCallback : DiffUtil.ItemCallback<ElfParser.ElfFunction>() {
@@ -119,6 +153,11 @@ class HexAdapter : ListAdapter<ElfParser.HexRow, HexAdapter.ViewHolder>(DiffCall
         holder.tvAddress.text = "${item.address}:"
         holder.tvBytes.text = item.hexBytes
         holder.tvAscii.text = "⎾${item.ascii}⏌"
+
+        // Alternating row background for Hex view
+        holder.itemView.setBackgroundColor(
+            android.graphics.Color.parseColor(if (position % 2 == 0) "#090A0F" else "#121420")
+        )
     }
 
     companion object DiffCallback : DiffUtil.ItemCallback<ElfParser.HexRow>() {
@@ -148,20 +187,25 @@ class DisassemblyAdapter : ListAdapter<String, DisassemblyAdapter.ViewHolder>(Di
         val item = getItem(position)
         holder.tvLineText.text = item
         
+        // Alternating row backgrounds for decompilation view
+        holder.itemView.setBackgroundColor(
+            android.graphics.Color.parseColor(if (position % 2 == 0) "#090A0F" else "#121420")
+        )
+
         // Apply micro-highlights for optimized, high-fidelity visual scanning
         val trimmed = item.trim()
         when {
             trimmed.startsWith("void ") || trimmed.startsWith("if ") || trimmed.startsWith("return;") || trimmed.startsWith("goto ") -> {
-                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // Neon Cyan
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // Premium Cyan
             }
             trimmed.startsWith("x") || trimmed.startsWith("w") || trimmed.startsWith("*") -> {
-                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FF007F")) // Neon Pink
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#94A3B8")) // Muted Slate
             }
             trimmed.startsWith("[") -> {
-                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00FF66")) // Neon Green
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00FF66")) // Tech Green
             }
             else -> {
-                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FFFFFF")) // Clean White
+                holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#F1F5F9")) // Clean Off-White
             }
         }
     }
@@ -213,24 +257,99 @@ class DisassemblyTabAdapter(
         
         val resolvedLabel = AnnotationRepository.resolveAddressName(item.address)
         val addrStr = "0x" + item.address.toString(16).uppercase().padStart(8, '0')
-        val formatted = if (resolvedLabel != "sub_${item.address.toString(16).uppercase()}") {
-            "$addrStr <$resolvedLabel>:  ${item.bytesHex.padEnd(16)}  ${item.mnemonic.padEnd(8)} ${item.opStr}"
+        
+        val addrPart = if (resolvedLabel != "sub_${item.address.toString(16).uppercase()}") {
+            "$addrStr <$resolvedLabel>:"
         } else {
-            "$addrStr:  ${item.bytesHex.padEnd(16)}  ${item.mnemonic.padEnd(8)} ${item.opStr}"
+            "$addrStr:"
         }
-        holder.tvLineText.text = formatted
+        
+        val addrPadded = addrPart.padEnd(28)
+        val bytesPadded = item.bytesHex.padEnd(16)
+        val mnemonicPadded = item.mnemonic.padEnd(8)
+        val opPart = item.opStr
+        
+        val fullLineText = "$addrPadded  $bytesPadded  $mnemonicPadded $opPart"
+        
+        val builder = SpannableStringBuilder(fullLineText)
+        
+        // 1. Color Address & Label: Muted Slate Gray (#64748B)
+        builder.setSpan(
+            ForegroundColorSpan(android.graphics.Color.parseColor("#64748B")),
+            0,
+            28,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        
+        // If there's a label in <...>, color the label with a distinct color, like #00E5FF (sleek cyan)
+        val labelStart = addrPart.indexOf('<')
+        val labelEnd = addrPart.indexOf('>')
+        if (labelStart != -1 && labelEnd != -1 && labelEnd > labelStart) {
+            builder.setSpan(
+                ForegroundColorSpan(android.graphics.Color.parseColor("#00E5FF")), // Label accent
+                labelStart,
+                labelEnd + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+        
+        // 2. Color Bytes: Muted Blue-Gray (#4A5568)
+        builder.setSpan(
+            ForegroundColorSpan(android.graphics.Color.parseColor("#4A5568")),
+            30,
+            46,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        
+        // 3. Color Mnemonic: Based on instruction type (subtle and consistent)
+        val mnemonicStart = 48
+        val mnemonicEnd = 56
+        val mnemonicColorHex = when (item.mnemonic.lowercase()) {
+            "cmp", "tst" -> "#FF007F" // Alert Pink
+            "b", "bl", "beq", "bne", "b.eq", "b.ne", "b.ge", "b.lt", "b.gt", "b.le", "jmp", "je", "jne" -> "#00E5FF" // Branch Cyan
+            "ldr", "str", "mov" -> "#00FF66" // Load/Store/Move Green
+            "add", "sub", "mul", "div" -> "#FFB300" // Arithmetic Gold
+            "ret" -> "#FF4F58" // Return Red
+            else -> "#F1F5F9" // General White
+        }
+        builder.setSpan(
+            ForegroundColorSpan(android.graphics.Color.parseColor(mnemonicColorHex)),
+            mnemonicStart,
+            mnemonicStart + item.mnemonic.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        builder.setSpan(
+            StyleSpan(Typeface.BOLD),
+            mnemonicStart,
+            mnemonicStart + item.mnemonic.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        
+        // 4. Color Operands: Clean White (#F1F5F9)
+        builder.setSpan(
+            ForegroundColorSpan(android.graphics.Color.parseColor("#F1F5F9")),
+            57,
+            fullLineText.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        
+        holder.tvLineText.text = builder
 
         // Handle inline comments
         val annotation = AnnotationRepository.getAnnotation(item.address)
         if (annotation != null && !annotation.comment.isNullOrBlank()) {
             holder.tvCommentText.text = "; ${annotation.comment}"
             holder.tvCommentText.visibility = View.VISIBLE
+            holder.tvCommentText.setTypeface(null, Typeface.ITALIC)
+            holder.tvCommentText.setTextColor(android.graphics.Color.parseColor("#64748B"))
         } else {
             val targetAddr = XrefAnalyzer.extractTargetAddress(item.opStr)
             val resolvedTarget = if (targetAddr != null) AnnotationRepository.resolveAddressName(targetAddr) else null
             if (targetAddr != null && resolvedTarget != null && resolvedTarget != "sub_${targetAddr.toString(16).uppercase()}") {
                 holder.tvCommentText.text = "; $resolvedTarget"
                 holder.tvCommentText.visibility = View.VISIBLE
+                holder.tvCommentText.setTypeface(null, Typeface.ITALIC)
+                holder.tvCommentText.setTextColor(android.graphics.Color.parseColor("#64748B"))
             } else {
                 holder.tvCommentText.visibility = View.GONE
             }
@@ -244,18 +363,12 @@ class DisassemblyTabAdapter(
         }
 
         if (item.address == highlightAddress) {
-            holder.itemView.setBackgroundColor(android.graphics.Color.parseColor("#3300FF66")) // 20% alpha neon green
+            holder.itemView.setBackgroundColor(android.graphics.Color.parseColor("#2600E5FF")) // 15% alpha cyan highlight
         } else {
-            holder.itemView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-        }
-
-        when (item.mnemonic.lowercase()) {
-            "cmp", "tst" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FF007F")) // Neon Pink
-            "b", "bl", "beq", "bne", "b.eq", "b.ne", "b.ge", "b.lt", "b.gt", "b.le", "jmp", "je", "jne" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // Neon Cyan
-            "ldr", "str", "mov" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#00FF66")) // Neon Green
-            "add", "sub", "mul", "div" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FFD700")) // Gold
-            "ret" -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FF3333")) // Red
-            else -> holder.tvLineText.setTextColor(android.graphics.Color.parseColor("#FFFFFF")) // Clean White
+            // Alternating backgrounds
+            holder.itemView.setBackgroundColor(
+                android.graphics.Color.parseColor(if (position % 2 == 0) "#090A0F" else "#121420")
+            )
         }
     }
 
