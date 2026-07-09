@@ -236,6 +236,19 @@
                         android:textStyle="bold"
                         app:strokeColor="@color/neon_green"
                         app:strokeWidth="1.5dp" />
+
+                    <!-- Decompile to C Button (Visible when binary loaded) -->
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_decompile_file"
+                        android:layout_width="match_parent"
+                        android:layout_height="52dp"
+                        android:layout_marginTop="8dp"
+                        android:fontFamily="monospace"
+                        android:text="DECOMPILE TO C"
+                        android:textColor="@color/dark_bg"
+                        android:textStyle="bold"
+                        android:visibility="gone"
+                        app:backgroundTint="@color/neon_cyan" />
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 

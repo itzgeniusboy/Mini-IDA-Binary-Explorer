@@ -53,6 +53,8 @@ class DecompilerService : Service() {
             private set
         @Volatile var lastError: String? = null
             private set
+        @Volatile var startTimeMs: Long = 0L
+            private set
     }
 
     override fun onCreate() {
@@ -72,6 +74,7 @@ class DecompilerService : Service() {
             if (inputPath.isNotEmpty() && outputPath.isNotEmpty()) {
                 startForeground(NOTIFICATION_ID, buildProgressNotification(0, "Initializing..."))
                 isRunning = true
+                startTimeMs = System.currentTimeMillis()
                 lastStatus = "RUNNING"
                 lastPercent = 0
                 lastBytesProcessed = 0L

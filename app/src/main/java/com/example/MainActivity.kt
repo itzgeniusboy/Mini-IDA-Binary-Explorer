@@ -56,6 +56,10 @@ class MainActivity : AppCompatActivity() {
     private var decompileProgressBar: android.widget.ProgressBar? = null
     private var decompileTvPercent: TextView? = null
     private var decompileTvCurrentFunc: TextView? = null
+    private var decompileTvBytes: TextView? = null
+    private var decompileTvSpeed: TextView? = null
+    private var decompileTvEta: TextView? = null
+    private var decompileStartTime: Long = 0L
     private var elfHeaderCached: ElfParser.ElfHeader? = null
     private var lastSelectedFunction: ElfParser.ElfFunction? = null
     
@@ -167,6 +171,7 @@ class MainActivity : AppCompatActivity() {
     // Portrait views
     private lateinit var tvFilePath: TextView
     private lateinit var btnPickFile: MaterialButton
+    private var btnDecompileFile: com.google.android.material.button.MaterialButton? = null
     private lateinit var statusBadge: TextView
     private lateinit var infoPanelCard: CardView
     private lateinit var tvElfClass: TextView
@@ -551,6 +556,7 @@ class MainActivity : AppCompatActivity() {
 
             tvFilePath = findViewById(R.id.tv_file_path)
             btnPickFile = findViewById(R.id.btn_pick_file)
+            btnDecompileFile = findViewById(R.id.btn_decompile_file)
             statusBadge = findViewById(R.id.status_badge)
             infoPanelCard = findViewById(R.id.info_panel_card)
 
@@ -566,6 +572,15 @@ class MainActivity : AppCompatActivity() {
                 filePickerLauncher.launch("*/*")
             }
 
+            btnDecompileFile?.setOnClickListener {
+                if (currentFileUri == null || currentFileName.isEmpty()) {
+                    android.widget.Toast.makeText(this, "Please load a binary first before decompiling!", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    val defaultDecompiledName = "${currentFileName.substringBeforeLast(".")}_pseudocode.c"
+                    decompileDocumentLauncher.launch(defaultDecompiledName)
+                }
+            }
+
             setupViewPager()
             setupGlobalSearch()
 
@@ -573,6 +588,7 @@ class MainActivity : AppCompatActivity() {
                 tvFilePath.text = currentFileName
                 statusBadge.text = "PARSED"
                 statusBadge.setTextColor(getColor(R.color.neon_green))
+                btnDecompileFile?.visibility = View.VISIBLE
 
                 elfHeaderCached?.let { header ->
                     infoPanelCard.visibility = View.VISIBLE
@@ -954,6 +970,7 @@ class MainActivity : AppCompatActivity() {
             statusBadge.text = "CANCELLED"
             statusBadge.setTextColor(getColor(R.color.neon_pink))
             tvFilePath.text = "Load cancelled by user"
+            btnDecompileFile?.visibility = View.GONE
             for (i in 0..4) {
                 tabProgressBars[i]?.visibility = View.GONE
                 tabEmptyStates[i]?.visibility = View.VISIBLE
@@ -975,6 +992,7 @@ class MainActivity : AppCompatActivity() {
                     statusBadge.text = "CANCELLED"
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Load cancelled by user"
+                    btnDecompileFile?.visibility = View.GONE
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -984,6 +1002,7 @@ class MainActivity : AppCompatActivity() {
                     statusBadge.text = "ERR_READ"
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Error reading binary: ${e.localizedMessage}"
+                    btnDecompileFile?.visibility = View.GONE
                     for (i in 0..4) {
                         tabProgressBars[i]?.visibility = View.GONE
                         tabEmptyStates[i]?.visibility = View.VISIBLE
@@ -1050,6 +1069,7 @@ class MainActivity : AppCompatActivity() {
         loadingDialog?.dismiss()
         statusBadge.text = "ANALYZING"
         statusBadge.setTextColor(getColor(R.color.neon_cyan))
+        btnDecompileFile?.visibility = View.VISIBLE
 
         navigationController.clear()
         disassemblyTabAdapter.setHighlightAddress(null)
@@ -2605,6 +2625,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         targetDecompiledUserUri = targetUri
+        decompileStartTime = System.currentTimeMillis()
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
@@ -2653,6 +2674,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun formatBytes(bytes: Long): String {
+        if (bytes <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
+        return String.format(java.util.Locale.US, "%.2f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+    }
+
     private fun showDecompileProgressDialog() {
         if (decompileProgressDialog?.isShowing == true) return
 
@@ -2677,7 +2705,7 @@ class MainActivity : AppCompatActivity() {
             text = "Target: $currentFileName"
             setTextColor(getColor(R.color.text_primary))
             textSize = 14f
-            setPadding(0, 0, 0, (8 * resources.displayMetrics.density).toInt())
+            setPadding(0, 0, 0, (12 * resources.displayMetrics.density).toInt())
         }
         container.addView(tvFile)
 
@@ -2694,9 +2722,36 @@ class MainActivity : AppCompatActivity() {
             setTypeface(android.graphics.Typeface.MONOSPACE)
             setTextColor(getColor(R.color.neon_cyan))
             textSize = 13f
-            setPadding(0, (6 * resources.displayMetrics.density).toInt(), 0, (12 * resources.displayMetrics.density).toInt())
+            setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, (4 * resources.displayMetrics.density).toInt())
         }
         container.addView(decompileTvPercent)
+
+        decompileTvBytes = TextView(context).apply {
+            text = "Processed: 0 B / 0 B"
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextColor(getColor(R.color.text_secondary))
+            textSize = 12f
+            setPadding(0, 0, 0, (4 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(decompileTvBytes)
+
+        decompileTvSpeed = TextView(context).apply {
+            text = "Speed: Calculating..."
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextColor(getColor(R.color.neon_green))
+            textSize = 12f
+            setPadding(0, 0, 0, (4 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(decompileTvSpeed)
+
+        decompileTvEta = TextView(context).apply {
+            text = "Time Remaining: Calculating..."
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextColor(getColor(R.color.neon_pink))
+            textSize = 12f
+            setPadding(0, 0, 0, (12 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(decompileTvEta)
 
         decompileTvCurrentFunc = TextView(context).apply {
             text = "Locating entry points..."
@@ -2715,12 +2770,63 @@ class MainActivity : AppCompatActivity() {
         decompileProgressDialog?.show()
     }
 
-    private fun updateDecompileProgressDialog(percent: Int, currentFunc: String, status: String, errorMsg: String?) {
+    private fun updateDecompileProgressDialog(
+        percent: Int,
+        bytesProcessed: Long,
+        totalBytes: Long,
+        currentFunc: String,
+        status: String,
+        errorMsg: String?
+    ) {
         if (decompileProgressDialog?.isShowing != true) return
 
         decompileProgressBar?.progress = percent
         decompileTvPercent?.text = "Progress: $percent%"
         decompileTvCurrentFunc?.text = "Decompiling: $currentFunc"
+
+        val now = System.currentTimeMillis()
+        val start = if (DecompilerService.isRunning && DecompilerService.startTimeMs > 0) {
+            DecompilerService.startTimeMs
+        } else {
+            if (decompileStartTime == 0L) decompileStartTime = now
+            decompileStartTime
+        }
+        val elapsedMs = now - start
+        val elapsedSec = elapsedMs / 1000.0
+
+        val processedStr = formatBytes(bytesProcessed)
+        val totalStr = formatBytes(totalBytes)
+        decompileTvBytes?.text = "Processed: $processedStr / $totalStr"
+
+        if (elapsedSec > 0.1 && bytesProcessed > 0) {
+            val bytesPerSec = bytesProcessed / elapsedSec
+            val speedStr = if (bytesPerSec < 1024) {
+                String.format(java.util.Locale.US, "%.1f B/s", bytesPerSec)
+            } else if (bytesPerSec < 1024 * 1024) {
+                String.format(java.util.Locale.US, "%.2f KB/s", bytesPerSec / 1024.0)
+            } else {
+                String.format(java.util.Locale.US, "%.2f MB/s", bytesPerSec / (1024.0 * 1024.0))
+            }
+            decompileTvSpeed?.text = "Speed: $speedStr"
+
+            val remainingBytes = totalBytes - bytesProcessed
+            if (remainingBytes > 0) {
+                val remainingSec = (remainingBytes / bytesPerSec).toLong()
+                val etaStr = if (remainingSec < 60) {
+                    "${remainingSec}s"
+                } else {
+                    val mins = remainingSec / 60
+                    val secs = remainingSec % 60
+                    "${mins}m ${secs}s"
+                }
+                decompileTvEta?.text = "Time Remaining: $etaStr"
+            } else {
+                decompileTvEta?.text = "Time Remaining: 0s"
+            }
+        } else {
+            decompileTvSpeed?.text = "Speed: Calculating..."
+            decompileTvEta?.text = "Time Remaining: Calculating..."
+        }
 
         if (status == "COMPLETED") {
             decompileProgressDialog?.dismiss()
@@ -2747,8 +2853,10 @@ class MainActivity : AppCompatActivity() {
             val percent = intent.getIntExtra(DecompilerService.EXTRA_PERCENT, 0)
             val currentFunc = intent.getStringExtra(DecompilerService.EXTRA_CURRENT_FUNCTION) ?: ""
             val errorMsg = intent.getStringExtra(DecompilerService.EXTRA_ERROR_MESSAGE)
+            val processed = intent.getLongExtra(DecompilerService.EXTRA_BYTES_PROCESSED, 0L)
+            val total = intent.getLongExtra(DecompilerService.EXTRA_TOTAL_BYTES, 0L)
 
-            updateDecompileProgressDialog(percent, currentFunc, status, errorMsg)
+            updateDecompileProgressDialog(percent, processed, total, currentFunc, status, errorMsg)
         }
     }
 
@@ -2766,6 +2874,8 @@ class MainActivity : AppCompatActivity() {
             showDecompileProgressDialog()
             updateDecompileProgressDialog(
                 DecompilerService.lastPercent,
+                DecompilerService.lastBytesProcessed,
+                DecompilerService.lastTotalBytes,
                 DecompilerService.lastCurrentFunction,
                 DecompilerService.lastStatus,
                 DecompilerService.lastError
