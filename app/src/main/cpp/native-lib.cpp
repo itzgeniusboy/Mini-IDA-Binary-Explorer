@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <unordered_map>
 
 #include <capstone/capstone.h>
 
@@ -44,6 +45,75 @@ std::string simple_demangle(const std::string& mangled) {
         return result;
     }
     return mangled;
+}
+
+std::string sanitize_function_name(const std::string& name) {
+    std::string clean = "";
+    for (char c : name) {
+        if (isalnum(c) || c == '_') {
+            clean += c;
+        } else {
+            clean += '_';
+        }
+    }
+    std::string final_clean = "";
+    for (char c : clean) {
+        if (c == '_' && !final_clean.empty() && final_clean.back() == '_') {
+            continue;
+        }
+        final_clean += c;
+    }
+    return final_clean;
+}
+
+struct GlobalData {
+    uint64_t virtualAddress;
+    std::string name;
+    std::string type;
+    std::string value;
+};
+
+std::vector<GlobalData> extract_strings_and_data(std::ifstream& inFile, uint64_t offset, uint64_t size, uint64_t vaddr, const std::string& sectionName) {
+    std::vector<GlobalData> list;
+    if (size == 0 || offset == 0) return list;
+
+    std::streampos originalPos = inFile.tellg();
+
+    std::vector<uint8_t> buffer(size);
+    inFile.seekg(offset, std::ios::beg);
+    inFile.read(reinterpret_cast<char*>(buffer.data()), size);
+
+    inFile.seekg(originalPos, std::ios::beg);
+
+    size_t i = 0;
+    while (i < size) {
+        size_t start = i;
+        while (i < size && buffer[i] >= 32 && buffer[i] <= 126) {
+            i++;
+        }
+        if (i < size && buffer[i] == '\0' && (i - start) >= 4) {
+            std::string str(reinterpret_cast<char*>(&buffer[start]), i - start);
+            std::string escaped = "";
+            for (char c : str) {
+                if (c == '"') escaped += "\\\"";
+                else if (c == '\\') escaped += "\\\\";
+                else if (c == '\n') escaped += "\\n";
+                else if (c == '\r') escaped += "\\r";
+                else if (c == '\t') escaped += "\\t";
+                else escaped += c;
+            }
+            list.push_back({
+                vaddr + start,
+                "str_" + to_hex_string(vaddr + start).substr(2),
+                "const char",
+                "\"" + escaped + "\""
+            });
+            i++;
+        } else {
+            i = start + 1;
+        }
+    }
+    return list;
 }
 
 // AST helper to decompile ARM64 instructions into pseudocode
@@ -475,6 +545,13 @@ Java_com_example_ElfParser_disassembleNative(JNIEnv *env, jobject thiz, jbyteArr
     return array;
 }
 
+extern "C++" std::string decompile_instructions_to_c(
+    const cs_insn *insns, 
+    size_t count, 
+    const std::string& func_name,
+    const std::unordered_map<uint64_t, std::string>& global_strings
+);
+
 JNIEXPORT jstring JNICALL
 Java_com_example_ElfParser_decompileNative(JNIEnv *env, jobject thiz, jbyteArray buffer, jlong base_address, jlong length) {
     if (!buffer) return nullptr;
@@ -492,7 +569,8 @@ Java_com_example_ElfParser_decompileNative(JNIEnv *env, jobject thiz, jbyteArray
         cs_insn *insn = nullptr;
         size_t count = cs_disasm(handle, reinterpret_cast<const uint8_t*>(bytes), len, base_address, 0, &insn);
         if (count > 0) {
-            decompiled_str = decompile_instructions(insn, count);
+            std::unordered_map<uint64_t, std::string> empty_globals;
+            decompiled_str = decompile_instructions_to_c(insn, count, "interactive_func", empty_globals);
             cs_free(insn, count);
         }
         cs_close(&handle);
@@ -594,10 +672,16 @@ Java_com_example_ElfParser_disassembleSection(JNIEnv *env, jobject thiz, jbyteAr
 }
 
 // Advanced custom pseudocode translator mapping assembly logic directly to C constructs
-std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, const std::string& func_name) {
+extern "C++" std::string decompile_instructions_to_c(
+    const cs_insn *insns, 
+    size_t count, 
+    const std::string& func_name,
+    const std::unordered_map<uint64_t, std::string>& global_strings
+) {
     std::stringstream ps;
     ps << "\n// Virtual Address: " << to_hex_string(insns[0].address) << "\n";
-    ps << "int " << func_name << "(";
+    ps << "// Demangled: " << func_name << "\n";
+    ps << "int " << sanitize_function_name(func_name) << "(";
     
     // Standard signature with mock generic parameters
     ps << "long a1, long a2, long a3, long a4) {\n";
@@ -609,6 +693,27 @@ std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, cons
     std::string current_cmp_reg = "";
     std::string current_cmp_val = "";
     bool has_cmp = false;
+
+    // Local registers map to track relative page base loads (like ADRP)
+    std::unordered_map<std::string, uint64_t> reg_values;
+
+    auto parse_imm = [](const std::string& op_str) -> uint64_t {
+        size_t hash = op_str.find('#');
+        if (hash == std::string::npos) return 0;
+        std::string val_str = op_str.substr(hash + 1);
+        while (!val_str.empty() && (val_str.back() == ']' || val_str.back() == ' ' || val_str.back() == ')')) {
+            val_str.pop_back();
+        }
+        try {
+            if (val_str.rfind("0x", 0) == 0 || val_str.rfind("0X", 0) == 0) {
+                return std::stoull(val_str, nullptr, 16);
+            } else {
+                return std::stoull(val_str, nullptr, 10);
+            }
+        } catch (...) {
+            return 0;
+        }
+    };
 
     for (size_t i = 0; i < count; ++i) {
         const cs_insn &insn = insns[i];
@@ -630,6 +735,15 @@ std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, cons
                 has_cmp = true;
             }
         } 
+        else if (mnemonic == "adrp") {
+            size_t comma = op_str.find(',');
+            if (comma != std::string::npos) {
+                std::string reg = op_str.substr(0, comma);
+                uint64_t imm = parse_imm(op_str.substr(comma + 1));
+                reg_values[reg] = imm;
+                ps << "    " << reg << " = " << to_hex_string(imm) << "; // Page base\n";
+            }
+        }
         else if (mnemonic.rfind("b.", 0) == 0) {
             std::string cond = mnemonic.substr(2);
             std::string label = op_str;
@@ -654,7 +768,7 @@ std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, cons
             ps << "    goto loc_" << op_str << ";\n";
         }
         else if (mnemonic == "bl") {
-            ps << "    sub_" << op_str << "(v0, v1, v2, v3);\n";
+            ps << "    " << sanitize_function_name("sub_" + op_str) << "(v0, v1, v2, v3);\n";
         }
         else if (mnemonic == "mov") {
             size_t comma = op_str.find(',');
@@ -677,9 +791,21 @@ std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, cons
                 size_t second_comma = op_str.find(',', first_comma + 1);
                 if (second_comma != std::string::npos) {
                     std::string rn = op_str.substr(first_comma + 2, second_comma - (first_comma + 2));
-                    std::string imm = op_str.substr(second_comma + 2);
+                    uint64_t imm = parse_imm(op_str.substr(second_comma + 2));
                     char op = (mnemonic == "add") ? '+' : '-';
-                    ps << "    " << rd << " = " << rn << " " << op << " " << imm << ";\n";
+                    
+                    if (reg_values.count(rn) > 0) {
+                        uint64_t base = reg_values[rn];
+                        uint64_t addr = (mnemonic == "add") ? (base + imm) : (base - imm);
+                        reg_values[rd] = addr;
+                        if (global_strings.count(addr) > 0) {
+                            ps << "    " << rd << " = &str_" << std::uppercase << std::hex << addr << "; // " << global_strings.at(addr) << "\n";
+                        } else {
+                            ps << "    " << rd << " = " << to_hex_string(addr) << ";\n";
+                        }
+                    } else {
+                        ps << "    " << rd << " = " << rn << " " << op << " " << imm << ";\n";
+                    }
                 } else {
                     std::string src = op_str.substr(first_comma + 2);
                     char op = (mnemonic == "add") ? '+' : '-';
@@ -692,7 +818,43 @@ std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, cons
             if (first_comma != std::string::npos) {
                 std::string rd = op_str.substr(0, first_comma);
                 std::string mem = op_str.substr(first_comma + 2);
-                ps << "    " << rd << " = *(_DWORD *)(" << mem << ");\n";
+                
+                size_t lbracket = mem.find('[');
+                size_t rbracket = mem.find(']');
+                if (lbracket != std::string::npos && rbracket != std::string::npos) {
+                    std::string inner = mem.substr(lbracket + 1, rbracket - lbracket - 1);
+                    size_t comma = inner.find(',');
+                    if (comma != std::string::npos) {
+                        std::string rn = inner.substr(0, comma);
+                        uint64_t imm = parse_imm(inner.substr(comma + 1));
+                        if (reg_values.count(rn) > 0) {
+                            uint64_t addr = reg_values[rn] + imm;
+                            reg_values[rd] = addr;
+                            if (global_strings.count(addr) > 0) {
+                                ps << "    " << rd << " = str_" << std::uppercase << std::hex << addr << "; // " << global_strings.at(addr) << "\n";
+                            } else {
+                                ps << "    " << rd << " = *(_QWORD *)(" << to_hex_string(addr) << ");\n";
+                            }
+                        } else {
+                            ps << "    " << rd << " = *(_QWORD *)(" << rn << " + " << imm << ");\n";
+                        }
+                    } else {
+                        std::string rn = inner;
+                        if (reg_values.count(rn) > 0) {
+                            uint64_t addr = reg_values[rn];
+                            reg_values[rd] = addr;
+                            if (global_strings.count(addr) > 0) {
+                                ps << "    " << rd << " = str_" << std::uppercase << std::hex << addr << "; // " << global_strings.at(addr) << "\n";
+                            } else {
+                                ps << "    " << rd << " = *(_QWORD *)(" << to_hex_string(addr) << ");\n";
+                            }
+                        } else {
+                            ps << "    " << rd << " = *(_QWORD *)(" << rn << ");\n";
+                        }
+                    }
+                } else {
+                    ps << "    " << rd << " = *" << mem << ";\n";
+                }
             }
         }
         else if (mnemonic == "str") {
@@ -920,7 +1082,7 @@ Java_com_example_ElfParser_decompileFileToCNative(JNIEnv *env, jobject thiz, jst
             }
 
             unsigned char type = st_info & 0x0F;
-            if (type == STT_FUNC && st_size > 0 && st_value > 0) {
+            if (type == STT_FUNC && st_value > 0) {
                 std::string name = "";
                 uint64_t nameOffset = targetStrOffset + st_name;
                 if (targetStrOffset != 0 && nameOffset < totalBytes) {
@@ -1002,7 +1164,32 @@ Java_com_example_ElfParser_decompileFileToCNative(JNIEnv *env, jobject thiz, jst
         }
     }
 
-    // Fallback: If stripped, chunk PT_LOAD executable segments
+    // Sort targetFuncs by virtual address
+    std::sort(targetFuncs.begin(), targetFuncs.end(), [](const DecompileFuncInfo& a, const DecompileFuncInfo& b) {
+        return a.virtualAddress < b.virtualAddress;
+    });
+
+    // Remove duplicates
+    targetFuncs.erase(
+        std::unique(targetFuncs.begin(), targetFuncs.end(), [](const DecompileFuncInfo& a, const DecompileFuncInfo& b) {
+            return a.virtualAddress == b.virtualAddress;
+        }),
+        targetFuncs.end()
+    );
+
+    // Fill in sizes for functions with size == 0
+    for (size_t i = 0; i < targetFuncs.size(); ++i) {
+        if (targetFuncs[i].size == 0) {
+            if (i + 1 < targetFuncs.size()) {
+                uint64_t calculatedSize = targetFuncs[i + 1].virtualAddress - targetFuncs[i].virtualAddress;
+                targetFuncs[i].size = std::min(calculatedSize, static_cast<uint64_t>(65536));
+            } else {
+                targetFuncs[i].size = 1024;
+            }
+        }
+    }
+
+    // Fallback: If stripped, scan executable segments for function entry points (prologues)
     if (targetFuncs.empty()) {
         uint64_t phoff = 0;
         uint16_t phentsize = 0;
@@ -1060,19 +1247,147 @@ Java_com_example_ElfParser_decompileFileToCNative(JNIEnv *env, jobject thiz, jst
                         }
 
                         if (p_filesz > 0 && p_offset > 0 && p_offset < totalBytes) {
-                            uint64_t chunkSize = 16384; // 16KB blocks
-                            for (uint64_t offset = 0; offset < p_filesz; offset += chunkSize) {
-                                uint64_t size = std::min(chunkSize, p_filesz - offset);
+                            std::vector<uint8_t> execBytes(p_filesz);
+                            std::streampos originalPos = inFile.tellg();
+                            inFile.seekg(p_offset, std::ios::beg);
+                            inFile.read(reinterpret_cast<char*>(execBytes.data()), p_filesz);
+                            inFile.seekg(originalPos, std::ios::beg);
+
+                            std::vector<uint64_t> entryPoints;
+                            entryPoints.push_back(p_vaddr);
+
+                            if (elf_machine_type == 183) { // EM_AARCH64
+                                for (size_t offset = 0; offset + 4 <= p_filesz; offset += 4) {
+                                    uint32_t instr = *reinterpret_cast<uint32_t*>(&execBytes[offset]);
+                                    bool is_stp = (instr & 0xFFC0FFFF) == 0xA9007BFD || (instr & 0xFFC0FFFF) == 0xA9807BFD;
+                                    bool is_sub_sp = (instr & 0xFFC003FF) == 0xD10003FF;
+                                    if (is_stp || is_sub_sp) {
+                                        uint64_t addr = p_vaddr + offset;
+                                        if (addr != p_vaddr) {
+                                            entryPoints.push_back(addr);
+                                        }
+                                    }
+                                }
+                            } else if (elf_machine_type == 40) { // EM_ARM
+                                for (size_t offset = 0; offset + 4 <= p_filesz; offset += 4) {
+                                    uint32_t instr = *reinterpret_cast<uint32_t*>(&execBytes[offset]);
+                                    if ((instr & 0xFFFF4000) == 0xE92D4000) {
+                                        entryPoints.push_back(p_vaddr + offset);
+                                    }
+                                }
+                            } else if (elf_machine_type == 62 || elf_machine_type == 3) { // x86_64 or x86
+                                for (size_t offset = 0; offset + 2 <= p_filesz; offset++) {
+                                    if (execBytes[offset] == 0x55) {
+                                        if (offset + 3 < p_filesz && execBytes[offset+1] == 0x48 && execBytes[offset+2] == 0x89 && execBytes[offset+3] == 0xE5) {
+                                            entryPoints.push_back(p_vaddr + offset);
+                                        } else if (offset + 2 < p_filesz && execBytes[offset+1] == 0x89 && execBytes[offset+2] == 0xE5) {
+                                            entryPoints.push_back(p_vaddr + offset);
+                                        }
+                                    }
+                                }
+                            }
+
+                            std::sort(entryPoints.begin(), entryPoints.end());
+                            entryPoints.erase(std::unique(entryPoints.begin(), entryPoints.end()), entryPoints.end());
+
+                            for (size_t i = 0; i < entryPoints.size(); ++i) {
+                                uint64_t addr = entryPoints[i];
+                                uint64_t size = 1024;
+                                if (i + 1 < entryPoints.size()) {
+                                    size = entryPoints[i+1] - addr;
+                                } else {
+                                    size = (p_vaddr + p_filesz) - addr;
+                                }
+                                size = std::min(size, static_cast<uint64_t>(65536));
+
                                 targetFuncs.push_back({
-                                    "sub_" + to_hex_string(p_vaddr + offset).substr(2),
-                                    p_vaddr + offset,
-                                    p_offset + offset,
+                                    "sub_" + to_hex_string(addr).substr(2),
+                                    addr,
+                                    p_offset + (addr - p_vaddr),
                                     size
                                 });
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    std::unordered_map<uint64_t, std::string> global_strings;
+    std::vector<GlobalData> extracted_globals;
+
+    auto local_getSectionName = [&](uint32_t sh_name, uint64_t shstrtabOffset, uint64_t shstrtabSize) -> std::string {
+        if (shstrtabOffset == 0 || sh_name >= shstrtabSize) return "";
+        std::streampos orig = inFile.tellg();
+        inFile.seekg(shstrtabOffset + sh_name, std::ios::beg);
+        std::string name = "";
+        char ch;
+        while (inFile.get(ch) && ch != '\0' && name.length() < 128) {
+            name += ch;
+        }
+        inFile.seekg(orig, std::ios::beg);
+        return name;
+    };
+
+    uint64_t local_shstrtabOffset = 0;
+    uint64_t local_shstrtabSize = 0;
+    if (shstrndx < shnum) {
+        uint64_t shstrSecOffset = shoff + shstrndx * shentsize;
+        if (shstrSecOffset + shentsize <= totalBytes) {
+            std::streampos orig = inFile.tellg();
+            if (is64Bit) {
+                inFile.seekg(shstrSecOffset + 24, std::ios::beg);
+                inFile.read(reinterpret_cast<char*>(&local_shstrtabOffset), 8);
+                inFile.read(reinterpret_cast<char*>(&local_shstrtabSize), 8);
+            } else {
+                uint32_t offset32 = 0, size32 = 0;
+                inFile.seekg(shstrSecOffset + 16, std::ios::beg);
+                inFile.read(reinterpret_cast<char*>(&offset32), 4);
+                inFile.read(reinterpret_cast<char*>(&size32), 4);
+                local_shstrtabOffset = offset32;
+                local_shstrtabSize = size32;
+            }
+            inFile.seekg(orig, std::ios::beg);
+        }
+    }
+
+    for (int i = 0; i < shnum; i++) {
+        uint64_t secOffset = shoff + i * shentsize;
+        if (secOffset + shentsize > totalBytes) break;
+
+        std::streampos orig = inFile.tellg();
+        inFile.seekg(secOffset, std::ios::beg);
+        uint32_t sh_name = 0;
+        inFile.read(reinterpret_cast<char*>(&sh_name), 4);
+        std::string secName = local_getSectionName(sh_name, local_shstrtabOffset, local_shstrtabSize);
+
+        uint32_t sh_type = 0;
+        inFile.read(reinterpret_cast<char*>(&sh_type), 4);
+
+        uint64_t sh_addr = 0, sh_offset = 0, sh_size = 0;
+        if (is64Bit) {
+            inFile.seekg(secOffset + 16, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&sh_addr), 8);
+            inFile.read(reinterpret_cast<char*>(&sh_offset), 8);
+            inFile.read(reinterpret_cast<char*>(&sh_size), 8);
+        } else {
+            uint32_t tmp_addr = 0, tmp_offset = 0, tmp_size = 0;
+            inFile.seekg(secOffset + 12, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&tmp_addr), 4);
+            inFile.read(reinterpret_cast<char*>(&tmp_offset), 4);
+            inFile.read(reinterpret_cast<char*>(&tmp_size), 4);
+            sh_addr = tmp_addr;
+            sh_offset = tmp_offset;
+            sh_size = tmp_size;
+        }
+        inFile.seekg(orig, std::ios::beg);
+
+        if (secName == ".rodata" || secName == ".data" || secName == ".string") {
+            auto dataList = extract_strings_and_data(inFile, sh_offset, sh_size, sh_addr, secName);
+            for (const auto& gd : dataList) {
+                global_strings[gd.virtualAddress] = gd.value;
+                extracted_globals.push_back(gd);
             }
         }
     }
@@ -1093,6 +1408,12 @@ Java_com_example_ElfParser_decompileFileToCNative(JNIEnv *env, jobject thiz, jst
     outFile << "typedef uint16_t _WORD;\n";
     outFile << "typedef uint32_t _DWORD;\n";
     outFile << "typedef uint64_t _QWORD;\n\n";
+
+    outFile << "// String Literals & Global Constants extracted from read-only data\n";
+    for (const auto& gd : extracted_globals) {
+        outFile << gd.type << " " << gd.name << "[] = " << gd.value << ";\n";
+    }
+    outFile << "\n\n";
 
     // Setup Capstone Disassembler
     csh handle;
@@ -1142,7 +1463,7 @@ Java_com_example_ElfParser_decompileFileToCNative(JNIEnv *env, jobject thiz, jst
             cs_insn *insns = nullptr;
             size_t count = cs_disasm(handle, funcBytes.data(), func.size, func.virtualAddress, 0, &insns);
             if (count > 0) {
-                pseudocode = decompile_instructions_to_c(insns, count, func.name);
+                pseudocode = decompile_instructions_to_c(insns, count, func.name, global_strings);
                 cs_free(insns, count);
             } else {
                 pseudocode = "\n// Address: " + to_hex_string(func.virtualAddress) + "\n";
