@@ -81,6 +81,16 @@ class ElfParser(private val buffer: ByteBuffer) {
 
     private external fun demangleNative(mangled: String): String
 
+    interface DecompilerProgressCallback {
+        fun onProgress(bytesProcessed: Long, totalBytes: Long, percentage: Int, currentFunction: String)
+    }
+
+    external fun decompileFileToCNative(
+        inputPath: String,
+        outputPath: String,
+        callback: DecompilerProgressCallback
+    ): Boolean
+
     external fun disassembleNative(bytes: ByteArray, baseAddress: Long, length: Long): Array<String>
     external fun decompileNative(bytes: ByteArray, baseAddress: Long, length: Long): String
     external fun disassembleSection(bytes: ByteArray, baseAddress: Long, elfMachineType: Int, is64Bit: Boolean): Array<DisassemblyLine>?

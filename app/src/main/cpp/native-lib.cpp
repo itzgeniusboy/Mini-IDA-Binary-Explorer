@@ -11,6 +11,9 @@
 #include <cstdint>
 #include <cstring>
 #include <cxxabi.h>
+#include <fstream>
+#include <iostream>
+#include <algorithm>
 
 #include <capstone/capstone.h>
 
@@ -590,4 +593,591 @@ Java_com_example_ElfParser_disassembleSection(JNIEnv *env, jobject thiz, jbyteAr
     return array;
 }
 
+// Advanced custom pseudocode translator mapping assembly logic directly to C constructs
+std::string decompile_instructions_to_c(const cs_insn *insns, size_t count, const std::string& func_name) {
+    std::stringstream ps;
+    ps << "\n// Virtual Address: " << to_hex_string(insns[0].address) << "\n";
+    ps << "int " << func_name << "(";
+    
+    // Standard signature with mock generic parameters
+    ps << "long a1, long a2, long a3, long a4) {\n";
+    ps << "    // Local variables mapping registers\n";
+    ps << "    _QWORD v0 = 0, v1 = 0, v2 = 0, v3 = 0, v4 = 0, v5 = 0;\n";
+    ps << "    _DWORD d0 = 0, d1 = 0, d2 = 0, d3 = 0;\n";
+    ps << "    void* ptr = nullptr;\n\n";
+
+    std::string current_cmp_reg = "";
+    std::string current_cmp_val = "";
+    bool has_cmp = false;
+
+    for (size_t i = 0; i < count; ++i) {
+        const cs_insn &insn = insns[i];
+        std::string mnemonic = insn.mnemonic;
+        std::string op_str = insn.op_str;
+
+        ps << "    // " << mnemonic << " " << op_str << "\n";
+
+        if (mnemonic == "cmp") {
+            size_t comma = op_str.find(',');
+            if (comma != std::string::npos) {
+                current_cmp_reg = op_str.substr(0, comma);
+                size_t hash = op_str.find('#', comma);
+                if (hash != std::string::npos) {
+                    current_cmp_val = op_str.substr(hash + 1);
+                } else {
+                    current_cmp_val = op_str.substr(comma + 2);
+                }
+                has_cmp = true;
+            }
+        } 
+        else if (mnemonic.rfind("b.", 0) == 0) {
+            std::string cond = mnemonic.substr(2);
+            std::string label = op_str;
+            if (has_cmp) {
+                std::string op = "==";
+                if (cond == "ne") op = "!=";
+                else if (cond == "lt") op = "<";
+                else if (cond == "le") op = "<=";
+                else if (cond == "gt") op = ">";
+                else if (cond == "ge") op = ">=";
+
+                ps << "    if (" << current_cmp_reg << " " << op << " " << current_cmp_val << ") {\n";
+                ps << "        goto loc_" << label << ";\n";
+                ps << "    }\n";
+            } else {
+                ps << "    if (" << cond << ") {\n";
+                ps << "        goto loc_" << label << ";\n";
+                ps << "    }\n";
+            }
+        }
+        else if (mnemonic == "b") {
+            ps << "    goto loc_" << op_str << ";\n";
+        }
+        else if (mnemonic == "bl") {
+            ps << "    sub_" << op_str << "(v0, v1, v2, v3);\n";
+        }
+        else if (mnemonic == "mov") {
+            size_t comma = op_str.find(',');
+            if (comma != std::string::npos) {
+                std::string dest = op_str.substr(0, comma);
+                std::string src = op_str.substr(comma + 2);
+                if (dest[0] == 'w') {
+                    ps << "    d" << dest.substr(1) << " = " << src << ";\n";
+                } else if (dest[0] == 'x') {
+                    ps << "    v" << dest.substr(1) << " = " << src << ";\n";
+                } else {
+                    ps << "    " << dest << " = " << src << ";\n";
+                }
+            }
+        }
+        else if (mnemonic == "add" || mnemonic == "sub") {
+            size_t first_comma = op_str.find(',');
+            if (first_comma != std::string::npos) {
+                std::string rd = op_str.substr(0, first_comma);
+                size_t second_comma = op_str.find(',', first_comma + 1);
+                if (second_comma != std::string::npos) {
+                    std::string rn = op_str.substr(first_comma + 2, second_comma - (first_comma + 2));
+                    std::string imm = op_str.substr(second_comma + 2);
+                    char op = (mnemonic == "add") ? '+' : '-';
+                    ps << "    " << rd << " = " << rn << " " << op << " " << imm << ";\n";
+                } else {
+                    std::string src = op_str.substr(first_comma + 2);
+                    char op = (mnemonic == "add") ? '+' : '-';
+                    ps << "    " << rd << " = " << rd << " " << op << " " << src << ";\n";
+                }
+            }
+        }
+        else if (mnemonic == "ldr") {
+            size_t first_comma = op_str.find(',');
+            if (first_comma != std::string::npos) {
+                std::string rd = op_str.substr(0, first_comma);
+                std::string mem = op_str.substr(first_comma + 2);
+                ps << "    " << rd << " = *(_DWORD *)(" << mem << ");\n";
+            }
+        }
+        else if (mnemonic == "str") {
+            size_t first_comma = op_str.find(',');
+            if (first_comma != std::string::npos) {
+                std::string rd = op_str.substr(0, first_comma);
+                std::string mem = op_str.substr(first_comma + 2);
+                ps << "    *(_DWORD *)(" << mem << ") = " << rd << ";\n";
+            }
+        }
+        else if (mnemonic == "ret") {
+            ps << "    return v0;\n";
+        }
+    }
+
+    ps << "}\n";
+    return ps.str();
 }
+
+// High-performance JNI bridge that decompiles `.so` files chunk-by-chunk on disk safely
+JNIEXPORT jboolean JNICALL
+Java_com_example_ElfParser_decompileFileToCNative(JNIEnv *env, jobject thiz, jstring input_path, jstring output_path, jobject callback) {
+    if (!input_path || !output_path || !callback) return JNI_FALSE;
+
+    const char *in_path = env->GetStringUTFChars(input_path, nullptr);
+    const char *out_path = env->GetStringUTFChars(output_path, nullptr);
+
+    if (!in_path || !out_path) {
+        if (in_path) env->ReleaseStringUTFChars(input_path, in_path);
+        if (out_path) env->ReleaseStringUTFChars(output_path, out_path);
+        return JNI_FALSE;
+    }
+
+    // Lookup callback onProgress method ID
+    jclass cbClass = env->GetObjectClass(callback);
+    jmethodID onProgressMethod = env->GetMethodID(cbClass, "onProgress", "(JJILjava/lang/String;)V");
+    if (!onProgressMethod) {
+        env->ReleaseStringUTFChars(input_path, in_path);
+        env->ReleaseStringUTFChars(output_path, out_path);
+        return JNI_FALSE;
+    }
+
+    // Open file streams directly on disk (no massive mapping or memory usage)
+    std::ifstream inFile(in_path, std::ios::binary);
+    std::ofstream outFile(out_path);
+
+    if (!inFile.is_open() || !outFile.is_open()) {
+        if (in_path) env->ReleaseStringUTFChars(input_path, in_path);
+        if (out_path) env->ReleaseStringUTFChars(output_path, out_path);
+        return JNI_FALSE;
+    }
+
+    // Read total file size
+    inFile.seekg(0, std::ios::end);
+    long long totalBytes = inFile.tellg();
+    inFile.seekg(0, std::ios::beg);
+
+    if (totalBytes < sizeof(Elf32_Ehdr)) {
+        inFile.close();
+        outFile.close();
+        env->ReleaseStringUTFChars(input_path, in_path);
+        env->ReleaseStringUTFChars(output_path, out_path);
+        return JNI_FALSE;
+    }
+
+    // Verify ELF identity
+    unsigned char elf_ident[16];
+    inFile.read(reinterpret_cast<char*>(elf_ident), 16);
+    if (elf_ident[0] != 0x7F || elf_ident[1] != 'E' || elf_ident[2] != 'L' || elf_ident[3] != 'F') {
+        inFile.close();
+        outFile.close();
+        env->ReleaseStringUTFChars(input_path, in_path);
+        env->ReleaseStringUTFChars(output_path, out_path);
+        return JNI_FALSE;
+    }
+
+    bool is64Bit = (elf_ident[4] == 2);
+    bool isLittleEndian = (elf_ident[5] == 1);
+
+    struct DecompileFuncInfo {
+        std::string name;
+        uint64_t virtualAddress;
+        uint64_t fileOffset;
+        uint64_t size;
+    };
+    std::vector<DecompileFuncInfo> targetFuncs;
+
+    // Read machine architecture type
+    int elf_machine_type = 183;
+    inFile.seekg(18, std::ios::beg);
+    uint16_t e_machine = 0;
+    inFile.read(reinterpret_cast<char*>(&e_machine), 2);
+    elf_machine_type = e_machine;
+
+    uint64_t shoff = 0;
+    uint16_t shentsize = 0;
+    uint16_t shnum = 0;
+    uint16_t shstrndx = 0;
+
+    if (is64Bit) {
+        inFile.seekg(40, std::ios::beg);
+        inFile.read(reinterpret_cast<char*>(&shoff), 8);
+        inFile.seekg(58, std::ios::beg);
+        inFile.read(reinterpret_cast<char*>(&shentsize), 2);
+        inFile.read(reinterpret_cast<char*>(&shnum), 2);
+        inFile.read(reinterpret_cast<char*>(&shstrndx), 2);
+    } else {
+        uint32_t shoff32 = 0;
+        inFile.seekg(32, std::ios::beg);
+        inFile.read(reinterpret_cast<char*>(&shoff32), 4);
+        shoff = shoff32;
+        inFile.seekg(46, std::ios::beg);
+        inFile.read(reinterpret_cast<char*>(&shentsize), 2);
+        inFile.read(reinterpret_cast<char*>(&shnum), 2);
+        inFile.read(reinterpret_cast<char*>(&shstrndx), 2);
+    }
+
+    uint64_t symtabOffset = 0;
+    uint64_t symtabSize = 0;
+    uint64_t symtabEntSize = 0;
+    uint64_t strtabOffset = 0;
+    uint64_t strtabSize = 0;
+
+    uint64_t dynsymOffset = 0;
+    uint64_t dynsymSize = 0;
+    uint64_t dynsymEntSize = 0;
+    uint64_t dynstrOffset = 0;
+    uint64_t dynstrSize = 0;
+
+    // Scan Section Headers for symbol maps
+    for (int i = 0; i < shnum; i++) {
+        uint64_t secOffset = shoff + i * shentsize;
+        if (secOffset + shentsize > totalBytes) break;
+
+        inFile.seekg(secOffset, std::ios::beg);
+        uint32_t sh_name = 0;
+        inFile.read(reinterpret_cast<char*>(&sh_name), 4);
+
+        uint32_t sh_type = 0;
+        inFile.read(reinterpret_cast<char*>(&sh_type), 4);
+
+        uint64_t sh_addr = 0;
+        uint64_t sh_offset = 0;
+        uint64_t sh_size = 0;
+        uint64_t sh_entsize = 0;
+
+        if (is64Bit) {
+            inFile.seekg(secOffset + 16, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&sh_addr), 8);
+            inFile.read(reinterpret_cast<char*>(&sh_offset), 8);
+            inFile.read(reinterpret_cast<char*>(&sh_size), 8);
+            inFile.seekg(secOffset + 56, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&sh_entsize), 8);
+        } else {
+            uint32_t tmp_addr = 0, tmp_offset = 0, tmp_size = 0, tmp_entsize = 0;
+            inFile.seekg(secOffset + 12, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&tmp_addr), 4);
+            inFile.read(reinterpret_cast<char*>(&tmp_offset), 4);
+            inFile.read(reinterpret_cast<char*>(&tmp_size), 4);
+            inFile.seekg(secOffset + 36, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&tmp_entsize), 4);
+            sh_addr = tmp_addr;
+            sh_offset = tmp_offset;
+            sh_size = tmp_size;
+            sh_entsize = tmp_entsize;
+        }
+
+        if (sh_type == SHT_SYMTAB) {
+            symtabOffset = sh_offset;
+            symtabSize = sh_size;
+            symtabEntSize = sh_entsize;
+        } else if (sh_type == SHT_DYNSYM) {
+            dynsymOffset = sh_offset;
+            dynsymSize = sh_size;
+            dynsymEntSize = sh_entsize;
+        } else if (sh_type == SHT_STRTAB) {
+            if (i != shstrndx) {
+                if (strtabOffset == 0) {
+                    strtabOffset = sh_offset;
+                    strtabSize = sh_size;
+                } else {
+                    dynstrOffset = sh_offset;
+                    dynstrSize = sh_size;
+                }
+            }
+        }
+    }
+
+    uint64_t targetSymOffset = (symtabOffset != 0) ? symtabOffset : dynsymOffset;
+    uint64_t targetSymSize = (symtabOffset != 0) ? symtabSize : dynsymSize;
+    uint64_t targetSymEntSize = (symtabOffset != 0) ? symtabEntSize : dynsymEntSize;
+    uint64_t targetStrOffset = (symtabOffset != 0) ? strtabOffset : (dynstrOffset != 0 ? dynstrOffset : strtabOffset);
+    uint64_t targetStrSize = (symtabOffset != 0) ? strtabSize : (dynstrOffset != 0 ? dynstrSize : strtabSize);
+
+    // Read symbols from file stream sequentially
+    if (targetSymOffset != 0 && targetSymSize != 0 && targetSymEntSize != 0) {
+        int count = targetSymSize / targetSymEntSize;
+        for (int i = 0; i < count; i++) {
+            uint64_t entryOffset = targetSymOffset + i * targetSymEntSize;
+            if (entryOffset + targetSymEntSize > totalBytes) break;
+
+            inFile.seekg(entryOffset, std::ios::beg);
+            uint32_t st_name = 0;
+            inFile.read(reinterpret_cast<char*>(&st_name), 4);
+
+            unsigned char st_info = 0;
+            uint64_t st_value = 0;
+            uint64_t st_size = 0;
+
+            if (is64Bit) {
+                inFile.seekg(entryOffset + 4, std::ios::beg);
+                inFile.read(reinterpret_cast<char*>(&st_info), 1);
+                inFile.seekg(entryOffset + 8, std::ios::beg);
+                inFile.read(reinterpret_cast<char*>(&st_value), 8);
+                inFile.read(reinterpret_cast<char*>(&st_size), 8);
+            } else {
+                uint32_t tmp_val = 0, tmp_size = 0;
+                inFile.seekg(entryOffset + 4, std::ios::beg);
+                inFile.read(reinterpret_cast<char*>(&tmp_val), 4);
+                inFile.read(reinterpret_cast<char*>(&tmp_size), 4);
+                inFile.seekg(entryOffset + 12, std::ios::beg);
+                inFile.read(reinterpret_cast<char*>(&st_info), 1);
+                st_value = tmp_val;
+                st_size = tmp_size;
+            }
+
+            unsigned char type = st_info & 0x0F;
+            if (type == STT_FUNC && st_size > 0 && st_value > 0) {
+                std::string name = "";
+                uint64_t nameOffset = targetStrOffset + st_name;
+                if (targetStrOffset != 0 && nameOffset < totalBytes) {
+                    inFile.seekg(nameOffset, std::ios::beg);
+                    char ch;
+                    while (inFile.get(ch) && ch != '\0' && name.length() < 256) {
+                        name += ch;
+                    }
+                }
+
+                if (name.empty()) {
+                    name = "sub_" + to_hex_string(st_value).substr(2);
+                }
+
+                // Translate virtual address to file offset using program headers (PT_LOAD)
+                uint64_t fileOffset = st_value; 
+                uint64_t phoff = 0;
+                uint16_t phentsize = 0;
+                uint16_t phnum = 0;
+                if (is64Bit) {
+                    inFile.seekg(32, std::ios::beg);
+                    inFile.read(reinterpret_cast<char*>(&phoff), 8);
+                    inFile.seekg(54, std::ios::beg);
+                    inFile.read(reinterpret_cast<char*>(&phentsize), 2);
+                    inFile.read(reinterpret_cast<char*>(&phnum), 2);
+                } else {
+                    uint32_t phoff32 = 0;
+                    inFile.seekg(28, std::ios::beg);
+                    inFile.read(reinterpret_cast<char*>(&phoff32), 4);
+                    phoff = phoff32;
+                    inFile.seekg(42, std::ios::beg);
+                    inFile.read(reinterpret_cast<char*>(&phentsize), 2);
+                    inFile.read(reinterpret_cast<char*>(&phnum), 2);
+                }
+
+                if (phoff > 0 && phnum > 0) {
+                    for (int p = 0; p < phnum; p++) {
+                        uint64_t phOffset = phoff + p * phentsize;
+                        inFile.seekg(phOffset, std::ios::beg);
+                        uint32_t p_type = 0;
+                        inFile.read(reinterpret_cast<char*>(&p_type), 4);
+                        if (p_type == 1) { // PT_LOAD
+                            uint64_t p_offset = 0, p_vaddr = 0, p_memsz = 0;
+                            if (is64Bit) {
+                                inFile.seekg(phOffset + 8, std::ios::beg);
+                                inFile.read(reinterpret_cast<char*>(&p_offset), 8);
+                                inFile.read(reinterpret_cast<char*>(&p_vaddr), 8);
+                                inFile.seekg(phOffset + 40, std::ios::beg);
+                                inFile.read(reinterpret_cast<char*>(&p_memsz), 8);
+                            } else {
+                                uint32_t t_offset = 0, t_vaddr = 0, t_memsz = 0;
+                                inFile.seekg(phOffset + 4, std::ios::beg);
+                                inFile.read(reinterpret_cast<char*>(&t_offset), 4);
+                                inFile.read(reinterpret_cast<char*>(&t_vaddr), 4);
+                                inFile.seekg(phOffset + 20, std::ios::beg);
+                                inFile.read(reinterpret_cast<char*>(&t_memsz), 4);
+                                p_offset = t_offset;
+                                p_vaddr = t_vaddr;
+                                p_memsz = t_memsz;
+                            }
+
+                            if (st_value >= p_vaddr && st_value < p_vaddr + p_memsz) {
+                                fileOffset = p_offset + (st_value - p_vaddr);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (fileOffset > 0 && fileOffset < totalBytes) {
+                    targetFuncs.push_back({
+                        simple_demangle(name),
+                        st_value,
+                        fileOffset,
+                        st_size
+                    });
+                }
+            }
+        }
+    }
+
+    // Fallback: If stripped, chunk PT_LOAD executable segments
+    if (targetFuncs.empty()) {
+        uint64_t phoff = 0;
+        uint16_t phentsize = 0;
+        uint16_t phnum = 0;
+        if (is64Bit) {
+            inFile.seekg(32, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&phoff), 8);
+            inFile.seekg(54, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&phentsize), 2);
+            inFile.read(reinterpret_cast<char*>(&phnum), 2);
+        } else {
+            uint32_t phoff32 = 0;
+            inFile.seekg(28, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&phoff32), 4);
+            phoff = phoff32;
+            inFile.seekg(42, std::ios::beg);
+            inFile.read(reinterpret_cast<char*>(&phentsize), 2);
+            inFile.read(reinterpret_cast<char*>(&phnum), 2);
+        }
+
+        if (phoff > 0 && phnum > 0) {
+            for (int p = 0; p < phnum; p++) {
+                uint64_t phOffset = phoff + p * phentsize;
+                inFile.seekg(phOffset, std::ios::beg);
+                uint32_t p_type = 0;
+                inFile.read(reinterpret_cast<char*>(&p_type), 4);
+                if (p_type == 1) { // PT_LOAD
+                    uint32_t p_flags = 0;
+                    if (is64Bit) {
+                        inFile.seekg(phOffset + 4, std::ios::beg);
+                        inFile.read(reinterpret_cast<char*>(&p_flags), 4);
+                    } else {
+                        inFile.seekg(phOffset + 24, std::ios::beg);
+                        inFile.read(reinterpret_cast<char*>(&p_flags), 4);
+                    }
+
+                    if (p_flags & 1) { // Executable
+                        uint64_t p_offset = 0, p_vaddr = 0, p_filesz = 0;
+                        if (is64Bit) {
+                            inFile.seekg(phOffset + 8, std::ios::beg);
+                            inFile.read(reinterpret_cast<char*>(&p_offset), 8);
+                            inFile.read(reinterpret_cast<char*>(&p_vaddr), 8);
+                            inFile.seekg(phOffset + 32, std::ios::beg);
+                            inFile.read(reinterpret_cast<char*>(&p_filesz), 8);
+                        } else {
+                            uint32_t t_offset = 0, t_vaddr = 0, t_filesz = 0;
+                            inFile.seekg(phOffset + 4, std::ios::beg);
+                            inFile.read(reinterpret_cast<char*>(&t_offset), 4);
+                            inFile.read(reinterpret_cast<char*>(&t_vaddr), 4);
+                            inFile.seekg(phOffset + 16, std::ios::beg);
+                            inFile.read(reinterpret_cast<char*>(&t_filesz), 4);
+                            p_offset = t_offset;
+                            p_vaddr = t_vaddr;
+                            p_filesz = t_filesz;
+                        }
+
+                        if (p_filesz > 0 && p_offset > 0 && p_offset < totalBytes) {
+                            uint64_t chunkSize = 16384; // 16KB blocks
+                            for (uint64_t offset = 0; offset < p_filesz; offset += chunkSize) {
+                                uint64_t size = std::min(chunkSize, p_filesz - offset);
+                                targetFuncs.push_back({
+                                    "sub_" + to_hex_string(p_vaddr + offset).substr(2),
+                                    p_vaddr + offset,
+                                    p_offset + offset,
+                                    size
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Write header to .c file
+    outFile << "/*\n";
+    outFile << " * Comprehensive C Pseudocode Dump - Generated by Mini IDA Pro\n";
+    outFile << " * Input Binary: " << in_path << "\n";
+    outFile << " * Total Size: " << totalBytes << " bytes\n";
+    outFile << " * Format: " << (is64Bit ? "ELF64" : "ELF32") << ", " << (isLittleEndian ? "Little Endian" : "Big Endian") << "\n";
+    outFile << " * Machine Type: " << elf_machine_type << "\n";
+    outFile << " */\n\n";
+
+    outFile << "#include <stdint.h>\n";
+    outFile << "#include <stdbool.h>\n\n";
+
+    outFile << "typedef uint8_t _BYTE;\n";
+    outFile << "typedef uint16_t _WORD;\n";
+    outFile << "typedef uint32_t _DWORD;\n";
+    outFile << "typedef uint64_t _QWORD;\n\n";
+
+    // Setup Capstone Disassembler
+    csh handle;
+    cs_arch arch = CS_ARCH_ARM64;
+    cs_mode mode = CS_MODE_ARM;
+
+    switch (elf_machine_type) {
+        case 3:
+            arch = CS_ARCH_X86;
+            mode = CS_MODE_32;
+            break;
+        case 62:
+            arch = CS_ARCH_X86;
+            mode = CS_MODE_64;
+            break;
+        case 40:
+            arch = CS_ARCH_ARM;
+            mode = CS_MODE_ARM;
+            break;
+        case 183:
+            arch = CS_ARCH_ARM64;
+            mode = CS_MODE_ARM;
+            break;
+        default:
+            arch = is64Bit ? CS_ARCH_ARM64 : CS_ARCH_ARM;
+            mode = CS_MODE_ARM;
+            break;
+    }
+
+    bool capstoneAvailable = (cs_open(arch, mode, &handle) == CS_ERR_OK);
+    if (capstoneAvailable) {
+        cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+    }
+
+    size_t numFuncs = targetFuncs.size();
+
+    // Stream and process function-by-function to prevent any OOM build-ups
+    for (size_t i = 0; i < numFuncs; ++i) {
+        const auto& func = targetFuncs[i];
+
+        std::vector<uint8_t> funcBytes(func.size);
+        inFile.seekg(func.fileOffset, std::ios::beg);
+        inFile.read(reinterpret_cast<char*>(funcBytes.data()), func.size);
+
+        std::string pseudocode = "";
+        if (capstoneAvailable && func.size > 0) {
+            cs_insn *insns = nullptr;
+            size_t count = cs_disasm(handle, funcBytes.data(), func.size, func.virtualAddress, 0, &insns);
+            if (count > 0) {
+                pseudocode = decompile_instructions_to_c(insns, count, func.name);
+                cs_free(insns, count);
+            } else {
+                pseudocode = "\n// Address: " + to_hex_string(func.virtualAddress) + "\n";
+                pseudocode += "void " + func.name + "() {\n    // [Assembly interpretation failed]\n}\n";
+            }
+        } else {
+            pseudocode = "\n// Address: " + to_hex_string(func.virtualAddress) + "\n";
+            pseudocode += "void " + func.name + "() {\n    // [Capstone disassembler engine offline]\n}\n";
+        }
+
+        // Write directly to file on disk and flush stream immediately to clear buffer
+        outFile << pseudocode;
+        outFile.flush();
+
+        // Update progress callback
+        long long currentPos = inFile.tellg();
+        int percentage = (int)((i + 1) * 100 / numFuncs);
+
+        jstring jCurrentFunc = env->NewStringUTF(func.name.c_str());
+        env->CallVoidMethod(callback, onProgressMethod, (jlong)currentPos, (jlong)totalBytes, (jint)percentage, jCurrentFunc);
+        env->DeleteLocalRef(jCurrentFunc);
+    }
+
+    if (capstoneAvailable) {
+        cs_close(&handle);
+    }
+
+    inFile.close();
+    outFile.close();
+
+    env->ReleaseStringUTFChars(input_path, in_path);
+    env->ReleaseStringUTFChars(output_path, out_path);
+
+    return JNI_TRUE;
+}
+
+}
+

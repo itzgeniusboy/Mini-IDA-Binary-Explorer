@@ -50,6 +50,12 @@ class MainActivity : AppCompatActivity() {
     private var binaryBuffer: ByteBuffer? = null
     private lateinit var offsetsDbHelper: OffsetsDatabaseHelper
     private var currentFileName: String = ""
+    private var currentFileUri: Uri? = null
+    private var targetDecompiledUserUri: Uri? = null
+    private var decompileProgressDialog: androidx.appcompat.app.AlertDialog? = null
+    private var decompileProgressBar: android.widget.ProgressBar? = null
+    private var decompileTvPercent: TextView? = null
+    private var decompileTvCurrentFunc: TextView? = null
     private var elfHeaderCached: ElfParser.ElfHeader? = null
     private var lastSelectedFunction: ElfParser.ElfFunction? = null
     
@@ -57,6 +63,10 @@ class MainActivity : AppCompatActivity() {
     private var allStringsCached: List<ElfParser.ElfString> = emptyList()
     private var allHexCached: List<ElfParser.HexRow> = emptyList()
     private var allDisassemblyCached: List<DisassemblyLine> = emptyList()
+    private var allJumpTablesCached: List<JumpTableInfo> = emptyList()
+    private var allSectionsCached: List<ElfParser.SectionInfo> = emptyList()
+    private var binaryEntropyCached: Double = 0.0
+    private var binaryPackerCached: String = "None (Standard ELF)"
 
     private val minimapVisibleStartAddr = androidx.compose.runtime.mutableStateOf(0L)
     private val minimapVisibleEndAddr = androidx.compose.runtime.mutableStateOf(0L)
@@ -86,6 +96,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val decompileDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            startDecompilationService(uri)
+        }
+    }
+
     // Adapters
     private lateinit var functionsAdapter: FunctionsAdapter
     private val stringsAdapter = StringsAdapter()
@@ -112,10 +130,15 @@ class MainActivity : AppCompatActivity() {
 
     private val disassemblyTabAdapter = DisassemblyTabAdapter(
         onItemClick = { line ->
-            val target = XrefAnalyzer.extractTargetAddress(line.opStr)
-            if (target != null) {
-                if (allDisassemblyCached.isNotEmpty() && target >= allDisassemblyCached.first().address && target <= allDisassemblyCached.last().address) {
-                    navigateToAddress(target)
+            val jtable = allJumpTablesCached.find { it.branchInstructionAddr == line.address }
+            if (jtable != null) {
+                showJumpTableBottomSheet(jtable)
+            } else {
+                val target = XrefAnalyzer.extractTargetAddress(line.opStr)
+                if (target != null) {
+                    if (allDisassemblyCached.isNotEmpty() && target >= allDisassemblyCached.first().address && target <= allDisassemblyCached.last().address) {
+                        navigateToAddress(target)
+                    }
                 }
             }
         },
@@ -157,6 +180,7 @@ class MainActivity : AppCompatActivity() {
     private val tabRecyclerViews = mutableMapOf<Int, RecyclerView>()
     private val tabProgressBars = mutableMapOf<Int, ProgressBar>()
     private val tabEmptyStates = mutableMapOf<Int, View>()
+    private val tabViews = mutableMapOf<Int, View>()
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -261,6 +285,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        disassemblyTabAdapter.getJumpTableInfo = { address ->
+            allJumpTablesCached.find { it.branchInstructionAddr == address }
+        }
+
         disassemblyTabAdapter.resolveDataXrefText = { address ->
             val fileId = currentFileName ?: ""
             if (fileId.isNotEmpty()) {
@@ -346,6 +374,148 @@ class MainActivity : AppCompatActivity() {
         initLayout()
     }
 
+    private fun calculateEntropy(bytes: ByteArray): Double {
+        if (bytes.isEmpty()) return 0.0
+        val counts = IntArray(256)
+        for (b in bytes) {
+            counts[b.toInt() and 0xFF]++
+        }
+        var entropy = 0.0
+        val total = bytes.size.toDouble()
+        for (count in counts) {
+            if (count > 0) {
+                val p = count / total
+                entropy -= p * (Math.log(p) / Math.log(2.0))
+            }
+        }
+        return entropy
+    }
+
+    private fun populateOverviewTab(view: View) {
+        val scrollView = view.findViewById<View>(R.id.overview_scroll_view)
+        val emptyState = view.findViewById<View>(R.id.overview_empty_state)
+        val loading = view.findViewById<View>(R.id.overview_loading)
+
+        if (currentFileName.isEmpty()) {
+            scrollView?.visibility = View.GONE
+            emptyState?.visibility = View.VISIBLE
+            loading?.visibility = View.GONE
+            return
+        }
+
+        scrollView?.visibility = View.VISIBLE
+        emptyState?.visibility = View.GONE
+        loading?.visibility = View.GONE
+
+        val tvName = view.findViewById<TextView>(R.id.tv_overview_name)
+        val tvSize = view.findViewById<TextView>(R.id.tv_overview_size)
+        val tvEntropy = view.findViewById<TextView>(R.id.tv_overview_entropy)
+        val tvPacker = view.findViewById<TextView>(R.id.tv_overview_packer)
+        val tvClass = view.findViewById<TextView>(R.id.tv_overview_class)
+        val tvEndian = view.findViewById<TextView>(R.id.tv_overview_endian)
+        val tvMachine = view.findViewById<TextView>(R.id.tv_overview_machine)
+        val tvEntry = view.findViewById<TextView>(R.id.tv_overview_entry)
+        val layoutSections = view.findViewById<android.widget.LinearLayout>(R.id.layout_overview_sections)
+
+        tvName?.text = currentFileName
+
+        binaryBuffer?.let { buf ->
+            val size = buf.capacity()
+            val sizeKb = size / 1024
+            val sizeStr = if (sizeKb > 1024) {
+                String.format("%.1f MB (%d bytes)", sizeKb / 1024.0, size)
+            } else {
+                "$sizeKb KB ($size bytes)"
+            }
+            tvSize?.text = sizeStr
+        }
+
+        tvEntropy?.text = String.format("%.2f", binaryEntropyCached)
+        if (binaryEntropyCached > 7.2) {
+            tvEntropy?.setTextColor(getColor(R.color.neon_pink))
+        } else if (binaryEntropyCached > 6.0) {
+            tvEntropy?.setTextColor(getColor(R.color.neon_cyan))
+        } else {
+            tvEntropy?.setTextColor(getColor(R.color.neon_green))
+        }
+
+        tvPacker?.text = binaryPackerCached
+        if (binaryPackerCached.contains("UPX") || binaryPackerCached.contains("Packed")) {
+            tvPacker?.setTextColor(getColor(R.color.neon_pink))
+        } else {
+            tvPacker?.setTextColor(getColor(R.color.text_primary))
+        }
+
+        elfHeaderCached?.let { header ->
+            tvClass?.text = header.classType
+            tvEndian?.text = header.endianType
+            tvMachine?.text = header.machine
+            tvEntry?.text = header.entryPoint
+        }
+
+        layoutSections?.removeAllViews()
+        val inflater = LayoutInflater.from(this)
+        allSectionsCached.forEach { section ->
+            val row = inflater.inflate(R.layout.item_section_row, layoutSections, false)
+            val tvSecName = row.findViewById<TextView>(R.id.tv_section_name)
+            val tvSecSize = row.findViewById<TextView>(R.id.tv_section_size)
+            val tvSecAddr = row.findViewById<TextView>(R.id.tv_section_addr)
+            val tvSecOffset = row.findViewById<TextView>(R.id.tv_section_offset)
+
+            tvSecName.text = section.name.ifEmpty { "[Unnamed]" }
+
+            val secSizeKb = section.size / 1024.0
+            tvSecSize.text = if (secSizeKb > 1024) {
+                String.format("%.2f MB", secSizeKb / 1024.0)
+            } else if (secSizeKb > 0.1) {
+                String.format("%.1f KB", secSizeKb)
+            } else {
+                "${section.size} B"
+            }
+
+            tvSecAddr.text = String.format("ADDR: 0x%08X", section.startAddress)
+            tvSecOffset.text = String.format("OFFSET: 0x%08X", section.fileOffset)
+
+            layoutSections.addView(row)
+        }
+    }
+
+    private fun updateRecentFilesList() {
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        if (isLandscape) return
+
+        val layoutRecentFiles = findViewById<View>(R.id.layout_recent_files) ?: return
+        val rvRecentFiles = findViewById<RecyclerView>(R.id.rv_recent_files) ?: return
+
+        if (currentFileName.isEmpty()) {
+            val recents = offsetsDbHelper.getRecentFiles()
+            if (recents.isNotEmpty()) {
+                layoutRecentFiles.visibility = View.VISIBLE
+                val adapter = RecentFilesAdapter(
+                    onItemClick = { recent ->
+                        try {
+                            val parsedUri = Uri.parse(recent.uri)
+                            handleSelectedFile(parsedUri)
+                        } catch (e: Exception) {
+                            android.widget.Toast.makeText(this, "Could not open file: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    onRemoveClick = { recent ->
+                        offsetsDbHelper.deleteRecentFile(recent.uri)
+                        updateRecentFilesList()
+                    }
+                )
+                rvRecentFiles.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
+                rvRecentFiles.adapter = adapter
+                adapter.submitList(recents)
+            } else {
+                layoutRecentFiles.visibility = View.GONE
+            }
+        } else {
+            layoutRecentFiles.visibility = View.GONE
+        }
+    }
+
     private fun initLayout() {
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         if (isLandscape) {
@@ -417,15 +587,18 @@ class MainActivity : AppCompatActivity() {
                 hexAdapter.submitList(allHexCached)
                 disassemblyTabAdapter.submitList(allDisassemblyCached)
 
-                for (i in 0..3) {
+                for (i in 0..4) {
                     tabProgressBars[i]?.visibility = View.GONE
                     tabEmptyStates[i]?.visibility = View.GONE
                     tabRecyclerViews[i]?.visibility = View.VISIBLE
                 }
+                tabViews[0]?.let { populateOverviewTab(it) }
 
-                tabRecyclerViews[3]?.post {
+                tabRecyclerViews[4]?.post {
                     updateMinimapState()
                 }
+            } else {
+                updateRecentFilesList()
             }
         }
 
@@ -442,11 +615,18 @@ class MainActivity : AppCompatActivity() {
             hexAdapter,
             disassemblyTabAdapter
         ) { position, itemView, recyclerView, progress, emptyState ->
-            tabRecyclerViews[position] = recyclerView
+            if (recyclerView != null) {
+                tabRecyclerViews[position] = recyclerView
+            }
             tabProgressBars[position] = progress
             tabEmptyStates[position] = emptyState
+            tabViews[position] = itemView
 
-            if (position == 3) {
+            if (position == 0) {
+                populateOverviewTab(itemView)
+            }
+
+            if (position == 4 && recyclerView != null) {
                 recyclerView.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
                     override fun onScrolled(rv: androidx.recyclerview.widget.RecyclerView, dx: Int, dy: Int) {
                         val layoutManager = rv.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
@@ -516,25 +696,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         viewPager.adapter = pagerAdapter
-        viewPager.offscreenPageLimit = 4
+        viewPager.offscreenPageLimit = 5
 
         TabLayoutMediator(tabLayout, viewPager) { tab, position ->
             when (position) {
                 0 -> {
+                    tab.text = "OVERVIEW"
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_info_details)
+                }
+                1 -> {
                     tab.text = "STRINGS"
                     tab.icon = getDrawable(android.R.drawable.ic_menu_search)
                 }
-                1 -> {
-                    tab.text = "FUNCTIONS"
-                    tab.icon = getDrawable(android.R.drawable.ic_menu_info_details)
-                }
                 2 -> {
+                    tab.text = "FUNCTIONS"
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_compass)
+                }
+                3 -> {
                     tab.text = "HEX"
                     tab.icon = getDrawable(android.R.drawable.ic_menu_view)
                 }
-                3 -> {
+                4 -> {
                     tab.text = "DISASM"
-                    tab.icon = getDrawable(android.R.drawable.ic_menu_compass)
+                    tab.icon = getDrawable(android.R.drawable.ic_menu_agenda)
                 }
             }
         }.attach()
@@ -630,6 +814,7 @@ class MainActivity : AppCompatActivity() {
         originalApkUri: Uri? = null,
         originalApkDisplayName: String? = null
     ) {
+        currentFileUri = uri
         checkMemoryAndWarn(uri, displayName, fromApkPicker, originalApkUri, originalApkDisplayName) {
             startElfProgressiveLoad(uri, displayName)
         }
@@ -755,20 +940,21 @@ class MainActivity : AppCompatActivity() {
         currentFileName = displayName
         tvFilePath.text = displayName
 
-        for (i in 0..3) {
+        for (i in 0..4) {
             tabProgressBars[i]?.visibility = View.VISIBLE
             tabEmptyStates[i]?.visibility = View.GONE
         }
 
         loadJob?.cancel()
         loadingProgressState.value = null
+        allJumpTablesCached = emptyList()
 
         showLoadingDialog {
             loadJob?.cancel()
             statusBadge.text = "CANCELLED"
             statusBadge.setTextColor(getColor(R.color.neon_pink))
             tvFilePath.text = "Load cancelled by user"
-            for (i in 0..3) {
+            for (i in 0..4) {
                 tabProgressBars[i]?.visibility = View.GONE
                 tabEmptyStates[i]?.visibility = View.VISIBLE
             }
@@ -798,7 +984,7 @@ class MainActivity : AppCompatActivity() {
                     statusBadge.text = "ERR_READ"
                     statusBadge.setTextColor(getColor(R.color.neon_pink))
                     tvFilePath.text = "Error reading binary: ${e.localizedMessage}"
-                    for (i in 0..3) {
+                    for (i in 0..4) {
                         tabProgressBars[i]?.visibility = View.GONE
                         tabEmptyStates[i]?.visibility = View.VISIBLE
                     }
@@ -900,13 +1086,14 @@ class MainActivity : AppCompatActivity() {
             disassemblyTabAdapter.submitList(allDisassemblyCached)
         }
 
-        for (i in 0..3) {
+        for (i in 0..4) {
             tabProgressBars[i]?.visibility = View.GONE
             tabEmptyStates[i]?.visibility = View.GONE
             tabRecyclerViews[i]?.visibility = View.VISIBLE
         }
+        tabViews[0]?.let { populateOverviewTab(it) }
 
-        tabRecyclerViews[3]?.post {
+        tabRecyclerViews[4]?.post {
             updateMinimapState()
         }
     }
@@ -939,7 +1126,8 @@ class MainActivity : AppCompatActivity() {
             LoadStage.EXTRACTING_STRINGS -> 0.65f
             LoadStage.INDEXING_DB -> 0.80f
             LoadStage.MATCHING_SIGNATURES -> 0.90f
-            LoadStage.RESOLVING_DATA_XREFS -> 0.95f
+            LoadStage.RESOLVING_DATA_XREFS -> 0.94f
+            LoadStage.DETECTING_JUMP_TABLES -> 0.97f
             LoadStage.DONE -> 1.0f
             LoadStage.ERROR -> 1.0f
         }
@@ -956,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
             statusBadge.text = "CANCELLED"
             statusBadge.setTextColor(getColor(R.color.neon_pink))
             tvFilePath.text = "Load cancelled by user"
-            for (i in 0..3) {
+            for (i in 0..4) {
                 tabProgressBars[i]?.visibility = View.GONE
                 tabEmptyStates[i]?.visibility = View.VISIBLE
             }
@@ -981,6 +1169,33 @@ class MainActivity : AppCompatActivity() {
             emit(LoadProgress(LoadStage.PARSING_SECTIONS, 0, "Analyzing sections and locating program segments..."))
             val textSection = parser.findTextSection()
             textSectionCached = textSection
+            
+            // Extract and cache all sections
+            val sections = parser.getSections()
+            allSectionsCached = sections
+
+            // Calculate shannon entropy on a sample of the binary to keep it very fast and fluid
+            val bytesToRead = minOf(size.toInt(), 128 * 1024)
+            val entropyBytes = ByteArray(bytesToRead)
+            val originalPosition = buffer.position()
+            buffer.position(0)
+            buffer.get(entropyBytes)
+            buffer.position(originalPosition)
+            binaryEntropyCached = calculateEntropy(entropyBytes)
+
+            // Basic packer / compression detection
+            var packerName = "None (Standard ELF)"
+            val hasUpx = sections.any { it.name.contains("UPX", ignoreCase = true) }
+            val hasNspack = sections.any { it.name.contains("nspack", ignoreCase = true) }
+            if (hasUpx) {
+                packerName = "UPX Packer Detected!"
+            } else if (hasNspack) {
+                packerName = "NSPack Packer Detected!"
+            } else if (binaryEntropyCached > 7.4) {
+                packerName = "High Entropy (Potential custom packer/encryption)"
+            }
+            binaryPackerCached = packerName
+
             yield()
 
             emit(LoadProgress(LoadStage.EXTRACTING_STRINGS, 0, "Scanning binary for readable ASCII strings..."))
@@ -1185,7 +1400,31 @@ class MainActivity : AppCompatActivity() {
                         isLittleEndian = header.isLittleEndian
                     )
                 }
-                offsetsDbHelper.insertXrefs(displayName, xrefs)
+
+                emit(LoadProgress(LoadStage.DETECTING_JUMP_TABLES, 0, "Analyzing indirect branches for jump tables..."))
+                val jumpTables = withContext(Dispatchers.Default) {
+                    JumpTableAnalyzer.analyze(
+                        disassembly = fullDisassemblyForXrefs.toList(),
+                        sections = sections,
+                        buffer = binaryBuffer,
+                        isLittleEndian = header.isLittleEndian,
+                        arch = ElfArch.fromMachineVal(header.machineVal),
+                        is64Bit = header.is64Bit
+                    )
+                }
+                allJumpTablesCached = jumpTables
+
+                val jumpTableXrefs = jumpTables.flatMap { table ->
+                    table.caseTargets.map { target ->
+                        XrefEntry(
+                            fromAddr = table.branchInstructionAddr,
+                            toAddr = target,
+                            type = "jump_table_case"
+                        )
+                    }
+                }
+
+                offsetsDbHelper.insertXrefs(displayName, xrefs + jumpTableXrefs)
             }
             yield()
 
@@ -1193,6 +1432,31 @@ class MainActivity : AppCompatActivity() {
 
             withContext(Dispatchers.Main) {
                 checkAndInitializeUiEarly(header)
+
+                try {
+                    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    contentResolver.takePersistableUriPermission(uri, takeFlags)
+                } catch (e: SecurityException) {
+                    // Ignore, maybe not a persistable document Uri or picker
+                }
+
+                // Add to recent files database
+                val fileSizeVal = size
+                val headerMachineVal = header.machine
+                val uriStr = uri.toString()
+                lifecycleScope.launch(Dispatchers.IO) {
+                    offsetsDbHelper.insertRecentFile(
+                        RecentFile(
+                            uri = uriStr,
+                            displayName = displayName,
+                            lastOpened = System.currentTimeMillis(),
+                            fileSize = fileSizeVal,
+                            architecture = headerMachineVal
+                        )
+                    )
+                }
+
+                findViewById<View>(R.id.layout_recent_files)?.visibility = View.GONE
 
                 loadingDialog?.dismiss()
                 statusBadge.text = "PARSED"
@@ -1203,13 +1467,14 @@ class MainActivity : AppCompatActivity() {
                 hexAdapter.submitList(allHexCached)
                 disassemblyTabAdapter.submitList(allDisassemblyCached)
 
-                for (i in 0..3) {
+                for (i in 0..4) {
                     tabProgressBars[i]?.visibility = View.GONE
                     tabEmptyStates[i]?.visibility = View.GONE
                     tabRecyclerViews[i]?.visibility = View.VISIBLE
                 }
+                tabViews[0]?.let { populateOverviewTab(it) }
 
-                tabRecyclerViews[3]?.post {
+                tabRecyclerViews[4]?.post {
                     updateMinimapState()
                 }
 
@@ -1255,7 +1520,89 @@ class MainActivity : AppCompatActivity() {
             header.machineVal,
             header.is64Bit
         ) ?: return emptyList()
-        return XrefAnalyzer.analyze(disassembly.toList())
+
+        val directXrefs = XrefAnalyzer.analyze(
+            disassembly = disassembly.toList(),
+            knownStrings = allStringsCached,
+            sections = parser.getSections(),
+            buffer = buffer,
+            isLittleEndian = header.isLittleEndian
+        )
+        val jumpTables = JumpTableAnalyzer.analyze(
+            disassembly = disassembly.toList(),
+            sections = parser.getSections(),
+            buffer = buffer,
+            isLittleEndian = header.isLittleEndian,
+            arch = ElfArch.fromMachineVal(header.machineVal),
+            is64Bit = header.is64Bit
+        )
+        runOnUiThread {
+            addDetectedJumpTables(jumpTables)
+        }
+        val jumpTableXrefs = jumpTables.flatMap { table ->
+            table.caseTargets.map { target ->
+                XrefEntry(
+                    fromAddr = table.branchInstructionAddr,
+                    toAddr = target,
+                    type = "jump_table_case"
+                )
+            }
+        }
+        return directXrefs + jumpTableXrefs
+    }
+
+    private fun addDetectedJumpTables(tables: List<JumpTableInfo>) {
+        val existing = allJumpTablesCached.toMutableList()
+        var updated = false
+        for (t in tables) {
+            if (existing.none { it.branchInstructionAddr == t.branchInstructionAddr }) {
+                existing.add(t)
+                updated = true
+            }
+        }
+        if (updated) {
+            allJumpTablesCached = existing
+            disassemblyTabAdapter.notifyDataSetChanged()
+        }
+    }
+
+    private fun showJumpTableBottomSheet(table: JumpTableInfo) {
+        val context = this
+        val dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_xref_details, null)
+        val tvDialogTitle: TextView = dialogView.findViewById(R.id.tv_dialog_title)
+        val containerCalledBy: android.widget.LinearLayout = dialogView.findViewById(R.id.container_called_by)
+        val containerCalls: android.widget.LinearLayout = dialogView.findViewById(R.id.container_calls)
+        val tvCalledByHeader: TextView = dialogView.findViewById(R.id.tv_called_by_header)
+        val tvCallsHeader: TextView = dialogView.findViewById(R.id.tv_calls_header)
+
+        tvDialogTitle.text = "SWITCH JUMP TABLE"
+        tvCalledByHeader.visibility = View.GONE
+        containerCalledBy.visibility = View.GONE
+
+        tvCallsHeader.text = "CASE TARGETS (${table.entryCount})"
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(context)
+            .setView(dialogView)
+            .create()
+
+        for (target in table.caseTargets) {
+            val itemView = LayoutInflater.from(context).inflate(R.layout.item_xref_list, containerCalls, false)
+            val tvRefText: TextView = itemView.findViewById(R.id.tv_xref_text)
+            val toHex = "0x" + target.toString(16).uppercase()
+
+            val resolvedName = AnnotationRepository.resolveAddressName(target)
+            val label = "$toHex ($resolvedName)"
+            tvRefText.text = "→ case: $label"
+
+            itemView.setOnClickListener {
+                dialog.dismiss()
+                navigateToAddress(target)
+            }
+            containerCalls.addView(itemView)
+        }
+
+        dialog.show()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
     }
 
     private fun loadNextDisassemblyChunk() {
@@ -1707,7 +2054,7 @@ class MainActivity : AppCompatActivity() {
             minimapBookmarks.value = BookmarkRepository.getAllBookmarks()
             
             // Calculate current visible address range
-            val rv = tabRecyclerViews[3]
+            val rv = tabRecyclerViews[4]
             val layoutManager = rv?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
             if (layoutManager != null) {
                 val firstVisible = layoutManager.findFirstVisibleItemPosition()
@@ -1732,7 +2079,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateMinimapScrollPosition() {
         val textSection = textSectionCached ?: return
-        val rv = tabRecyclerViews[3]
+        val rv = tabRecyclerViews[4]
         val layoutManager = rv?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
         if (layoutManager != null) {
             val firstVisible = layoutManager.findFirstVisibleItemPosition()
@@ -1751,7 +2098,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scrollToDisassemblyAddress(address: Long) {
-        val recyclerView = tabRecyclerViews[3]
+        val recyclerView = tabRecyclerViews[4]
         if (recyclerView != null) {
             recyclerView.scrollToAddress(
                 matcher = { index ->
@@ -1784,7 +2131,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scrollToHexOffset(offset: Long, length: Int) {
-        val recyclerView = tabRecyclerViews[2]
+        val recyclerView = tabRecyclerViews[3]
         if (recyclerView != null) {
             recyclerView.scrollToAddress(
                 matcher = { index ->
@@ -1895,7 +2242,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun navigateToStringAddress(address: Long) {
         if (resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE) {
-            viewPager.currentItem = 0
+            viewPager.currentItem = 1
         }
         scrollToStringsAddress(address)
     }
@@ -1906,7 +2253,7 @@ class MainActivity : AppCompatActivity() {
             itemOffsetLong == address
         }
         if (index != -1) {
-            val recyclerView = tabRecyclerViews[0]
+            val recyclerView = tabRecyclerViews[1]
             val layoutManager = recyclerView?.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager
             layoutManager?.scrollToPositionWithOffset(index, 0)
         }
@@ -1969,11 +2316,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu?): Boolean {
-        menu?.add(0, 102, 0, "Export Analysis Report")?.apply {
+        menu?.add(0, 102, 0, "Export Report")?.apply {
             setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
             setIcon(android.R.drawable.ic_menu_share)
         }
-        menu?.add(0, 101, 1, "Clear Extracted Cache")?.apply {
+        menu?.add(0, 103, 1, "Decompile to C")?.apply {
+            setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+            setIcon(android.R.drawable.ic_menu_compass)
+        }
+        menu?.add(0, 101, 2, "Clear Extracted Cache")?.apply {
             setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
         }
         return true
@@ -1991,6 +2342,15 @@ class MainActivity : AppCompatActivity() {
         }
         if (item.itemId == 102) {
             showExportDialog()
+            return true
+        }
+        if (item.itemId == 103) {
+            if (currentFileUri == null || currentFileName.isEmpty()) {
+                android.widget.Toast.makeText(this, "Please load a binary first before decompiling!", android.widget.Toast.LENGTH_SHORT).show()
+                return true
+            }
+            val defaultDecompiledName = "${currentFileName.substringBeforeLast(".")}_pseudocode.c"
+            decompileDocumentLauncher.launch(defaultDecompiledName)
             return true
         }
         return super.onOptionsItemSelected(item)
@@ -2237,6 +2597,190 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun startDecompilationService(targetUri: Uri) {
+        if (currentFileUri == null) {
+            android.widget.Toast.makeText(this, "No valid binary loaded!", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        targetDecompiledUserUri = targetUri
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(this@MainActivity, "Preparing high-performance decompilation...", android.widget.Toast.LENGTH_SHORT).show()
+                }
+
+                // Copy binary file to a local cache file for memory-efficient stream processing in C++
+                val tempInput = File(cacheDir, "decompiler_input.so")
+                contentResolver.openInputStream(currentFileUri!!).use { input ->
+                    tempInput.outputStream().use { output ->
+                        input?.copyTo(output)
+                    }
+                }
+
+                val tempOutput = File(cacheDir, "decompiler_output.c")
+                if (tempOutput.exists()) {
+                    tempOutput.delete()
+                }
+
+                // Fire up background ForegroundService
+                val serviceIntent = Intent(this@MainActivity, DecompilerService::class.java).apply {
+                    action = DecompilerService.ACTION_START_DECOMPILATION
+                    putExtra(DecompilerService.EXTRA_INPUT_PATH, tempInput.absolutePath)
+                    putExtra(DecompilerService.EXTRA_OUTPUT_PATH, tempOutput.absolutePath)
+                    putExtra(DecompilerService.EXTRA_USER_URI_STRING, targetUri.toString())
+                }
+
+                withContext(Dispatchers.Main) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(serviceIntent)
+                    } else {
+                        startService(serviceIntent)
+                    }
+                    showDecompileProgressDialog()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    androidx.appcompat.app.AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Decompilation Setup Error")
+                        .setMessage("Failed to prepare file: ${e.localizedMessage}")
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun showDecompileProgressDialog() {
+        if (decompileProgressDialog?.isShowing == true) return
+
+        val context = this
+        val container = android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(getColor(R.color.dark_surface))
+        }
+
+        val tvTitle = TextView(context).apply {
+            text = "DECOMPILER CORE ACTIVE"
+            setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+            setTextColor(getColor(R.color.neon_green))
+            textSize = 18f
+            setPadding(0, 0, 0, (12 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(tvTitle)
+
+        val tvFile = TextView(context).apply {
+            text = "Target: $currentFileName"
+            setTextColor(getColor(R.color.text_primary))
+            textSize = 14f
+            setPadding(0, 0, 0, (8 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(tvFile)
+
+        decompileProgressBar = android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            progressTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.neon_cyan))
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.dark_bg))
+        }
+        container.addView(decompileProgressBar)
+
+        decompileTvPercent = TextView(context).apply {
+            text = "Initializing: 0%"
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            setTextColor(getColor(R.color.neon_cyan))
+            textSize = 13f
+            setPadding(0, (6 * resources.displayMetrics.density).toInt(), 0, (12 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(decompileTvPercent)
+
+        decompileTvCurrentFunc = TextView(context).apply {
+            text = "Locating entry points..."
+            setTextColor(getColor(R.color.text_secondary))
+            textSize = 12f
+            setPadding(0, 0, 0, (16 * resources.displayMetrics.density).toInt())
+        }
+        container.addView(decompileTvCurrentFunc)
+
+        decompileProgressDialog = androidx.appcompat.app.AlertDialog.Builder(context)
+            .setView(container)
+            .setCancelable(false)
+            .setPositiveButton("Run in Background", null)
+            .create()
+
+        decompileProgressDialog?.show()
+    }
+
+    private fun updateDecompileProgressDialog(percent: Int, currentFunc: String, status: String, errorMsg: String?) {
+        if (decompileProgressDialog?.isShowing != true) return
+
+        decompileProgressBar?.progress = percent
+        decompileTvPercent?.text = "Progress: $percent%"
+        decompileTvCurrentFunc?.text = "Decompiling: $currentFunc"
+
+        if (status == "COMPLETED") {
+            decompileProgressDialog?.dismiss()
+            decompileProgressDialog = null
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Decompilation Complete")
+                .setMessage("C pseudocode file successfully generated and saved to your selected destination!")
+                .setPositiveButton("Dismiss", null)
+                .show()
+        } else if (status == "FAILED") {
+            decompileProgressDialog?.dismiss()
+            decompileProgressDialog = null
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Decompilation Failed")
+                .setMessage(errorMsg ?: "An error occurred during decompilation processing.")
+                .setPositiveButton("Dismiss", null)
+                .show()
+        }
+    }
+
+    private val decompilerReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val status = intent.getStringExtra(DecompilerService.EXTRA_STATUS) ?: "RUNNING"
+            val percent = intent.getIntExtra(DecompilerService.EXTRA_PERCENT, 0)
+            val currentFunc = intent.getStringExtra(DecompilerService.EXTRA_CURRENT_FUNCTION) ?: ""
+            val errorMsg = intent.getStringExtra(DecompilerService.EXTRA_ERROR_MESSAGE)
+
+            updateDecompileProgressDialog(percent, currentFunc, status, errorMsg)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val filter = android.content.IntentFilter(DecompilerService.ACTION_DECOMPILER_PROGRESS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(decompilerReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(decompilerReceiver, filter)
+        }
+
+        // Catch up with ongoing background service on resume
+        if (DecompilerService.isRunning) {
+            showDecompileProgressDialog()
+            updateDecompileProgressDialog(
+                DecompilerService.lastPercent,
+                DecompilerService.lastCurrentFunction,
+                DecompilerService.lastStatus,
+                DecompilerService.lastError
+            )
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try {
+            unregisterReceiver(decompilerReceiver)
+        } catch (e: Exception) {
+            // Ignore
+        }
+    }
 }
 
 // --- VIEW PAGER 2 ADAPTER ---
@@ -2246,38 +2790,42 @@ class TabPagerAdapter(
     private val functionsAdapter: FunctionsAdapter,
     private val hexAdapter: HexAdapter,
     private val disassemblyTabAdapter: DisassemblyTabAdapter,
-    private val onInitTab: (position: Int, itemView: View, recyclerView: RecyclerView, progress: ProgressBar, emptyState: View) -> Unit
+    private val onInitTab: (position: Int, itemView: View, recyclerView: RecyclerView?, progress: ProgressBar, emptyState: View) -> Unit
 ) : RecyclerView.Adapter<TabPagerAdapter.ViewHolder>() {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val recyclerView: RecyclerView = view.findViewById(R.id.recycler_view)
-        val progress: ProgressBar = view.findViewById(R.id.loading_indicator)
-        val emptyState: View = view.findViewById(R.id.empty_state)
+        val recyclerView: RecyclerView? = view.findViewById(R.id.recycler_view)
+        val progress: ProgressBar = view.findViewById(R.id.loading_indicator) ?: view.findViewById(R.id.overview_loading)
+        val emptyState: View = view.findViewById(R.id.empty_state) ?: view.findViewById(R.id.overview_empty_state)
     }
 
-    override fun getItemCount(): Int = 4
+    override fun getItemCount(): Int = 5
 
     override fun getItemViewType(position: Int): Int {
         return position
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val layoutId = if (viewType == 3) R.layout.tab_disassembly else R.layout.tab_recycler
+        val layoutId = when (viewType) {
+            0 -> R.layout.tab_overview
+            4 -> R.layout.tab_disassembly
+            else -> R.layout.tab_recycler
+        }
         val view = LayoutInflater.from(parent.context).inflate(layoutId, parent, false)
         return ViewHolder(view)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         // Optimize RecyclerView performance
-        holder.recyclerView.setHasFixedSize(true)
-        holder.recyclerView.setItemViewCacheSize(100) // Keep parsed views ready for ultra-smooth scrolling
-        holder.recyclerView.isNestedScrollingEnabled = false
+        holder.recyclerView?.setHasFixedSize(true)
+        holder.recyclerView?.setItemViewCacheSize(100) // Keep parsed views ready for ultra-smooth scrolling
+        holder.recyclerView?.isNestedScrollingEnabled = false
 
         when (position) {
-            0 -> holder.recyclerView.adapter = stringsAdapter
-            1 -> holder.recyclerView.adapter = functionsAdapter
-            2 -> holder.recyclerView.adapter = hexAdapter
-            3 -> holder.recyclerView.adapter = disassemblyTabAdapter
+            1 -> holder.recyclerView?.adapter = stringsAdapter
+            2 -> holder.recyclerView?.adapter = functionsAdapter
+            3 -> holder.recyclerView?.adapter = hexAdapter
+            4 -> holder.recyclerView?.adapter = disassemblyTabAdapter
         }
         onInitTab(position, holder.itemView, holder.recyclerView, holder.progress, holder.emptyState)
     }

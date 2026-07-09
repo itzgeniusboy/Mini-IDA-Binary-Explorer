@@ -69,7 +69,8 @@ fun LoadingProgressScreen(
                 LoadStage.EXTRACTING_STRINGS -> 0.65f
                 LoadStage.INDEXING_DB -> 0.80f
                 LoadStage.MATCHING_SIGNATURES -> 0.90f
-                LoadStage.RESOLVING_DATA_XREFS -> 0.95f
+                LoadStage.RESOLVING_DATA_XREFS -> 0.94f
+                LoadStage.DETECTING_JUMP_TABLES -> 0.97f
                 LoadStage.DONE -> 1.0f
                 LoadStage.ERROR -> 1.0f
             }
@@ -94,6 +95,7 @@ fun LoadingProgressScreen(
                 LoadStage.INDEXING_DB -> "INDEXING DATABASE"
                 LoadStage.MATCHING_SIGNATURES -> "MATCHING SIGNATURES"
                 LoadStage.RESOLVING_DATA_XREFS -> "RESOLVING DATA XREFS"
+                LoadStage.DETECTING_JUMP_TABLES -> "DETECTING JUMP TABLES"
                 LoadStage.DONE -> "ANALYSIS COMPLETE"
                 LoadStage.ERROR -> "ANALYSIS ERROR"
             }

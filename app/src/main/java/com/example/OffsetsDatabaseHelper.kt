@@ -9,7 +9,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
     companion object {
         const val DATABASE_NAME = "offsets.db"
-        const val DATABASE_VERSION = 5
+        const val DATABASE_VERSION = 6
 
         const val TABLE_OFFSETS = "offsets"
         const val COLUMN_ID = "id"
@@ -80,6 +80,18 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
 
         db.execSQL("CREATE INDEX idx_bookmarks_file_id ON bookmarks (file_id)")
         db.execSQL("CREATE INDEX idx_bookmarks_address ON bookmarks (address)")
+
+        // Add recent_files table
+        val createRecentFilesQuery = """
+            CREATE TABLE recent_files (
+                uri TEXT PRIMARY KEY,
+                display_name TEXT,
+                last_opened INTEGER,
+                file_size INTEGER,
+                architecture TEXT
+            )
+        """.trimIndent()
+        db.execSQL(createRecentFilesQuery)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -87,6 +99,7 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         db.execSQL("DROP TABLE IF EXISTS xrefs")
         db.execSQL("DROP TABLE IF EXISTS annotations")
         db.execSQL("DROP TABLE IF EXISTS bookmarks")
+        db.execSQL("DROP TABLE IF EXISTS recent_files")
         onCreate(db)
     }
 
@@ -437,4 +450,56 @@ class OffsetsDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABA
         }
         return list
     }
+
+    fun insertRecentFile(recent: RecentFile) {
+        val db = writableDatabase
+        val query = """
+            INSERT OR REPLACE INTO recent_files (uri, display_name, last_opened, file_size, architecture)
+            VALUES (?, ?, ?, ?, ?)
+        """.trimIndent()
+        val statement = db.compileStatement(query)
+        statement.clearBindings()
+        statement.bindString(1, recent.uri)
+        statement.bindString(2, recent.displayName)
+        statement.bindLong(3, recent.lastOpened)
+        statement.bindLong(4, recent.fileSize)
+        statement.bindString(5, recent.architecture)
+        statement.executeInsert()
+    }
+
+    fun getRecentFiles(): List<RecentFile> {
+        val db = readableDatabase
+        val list = mutableListOf<RecentFile>()
+        val query = "SELECT uri, display_name, last_opened, file_size, architecture FROM recent_files ORDER BY last_opened DESC LIMIT 10"
+        val cursor = db.rawQuery(query, null)
+        cursor.use {
+            val uriIdx = cursor.getColumnIndex("uri")
+            val nameIdx = cursor.getColumnIndex("display_name")
+            val openedIdx = cursor.getColumnIndex("last_opened")
+            val sizeIdx = cursor.getColumnIndex("file_size")
+            val archIdx = cursor.getColumnIndex("architecture")
+            while (cursor.moveToNext()) {
+                val uri = if (uriIdx != -1) cursor.getString(uriIdx) else ""
+                val displayName = if (nameIdx != -1) cursor.getString(nameIdx) else ""
+                val lastOpened = if (openedIdx != -1) cursor.getLong(openedIdx) else 0L
+                val fileSize = if (sizeIdx != -1) cursor.getLong(sizeIdx) else 0L
+                val architecture = if (archIdx != -1) cursor.getString(archIdx) else ""
+                list.add(RecentFile(uri, displayName, lastOpened, fileSize, architecture))
+            }
+        }
+        return list
+    }
+
+    fun deleteRecentFile(uri: String) {
+        val db = writableDatabase
+        db.delete("recent_files", "uri = ?", arrayOf(uri))
+    }
 }
+
+data class RecentFile(
+    val uri: String,
+    val displayName: String,
+    val lastOpened: Long,
+    val fileSize: Long,
+    val architecture: String
+)

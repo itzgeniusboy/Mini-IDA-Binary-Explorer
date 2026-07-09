@@ -8,6 +8,7 @@ enum class LoadStage {
     INDEXING_DB,
     MATCHING_SIGNATURES,
     RESOLVING_DATA_XREFS,
+    DETECTING_JUMP_TABLES,
     DONE,
     ERROR
 }

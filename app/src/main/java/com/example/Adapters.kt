@@ -449,6 +449,7 @@ class DisassemblyTabAdapter(
 ) : ListAdapter<DisassemblyLine, DisassemblyTabAdapter.ViewHolder>(DiffCallback) {
 
     var resolveDataXrefText: ((Long) -> String?)? = null
+    var getJumpTableInfo: ((Long) -> JumpTableInfo?)? = null
     var onBookmarkToggle: ((DisassemblyLine) -> Unit)? = null
 
     private var highlightAddress: Long? = null
@@ -609,8 +610,14 @@ class DisassemblyTabAdapter(
         holder.tvLineText.text = builder
 
         // Handle inline comments
+        val jtable = getJumpTableInfo?.invoke(item.address)
         val annotation = AnnotationRepository.getAnnotation(item.address)
-        if (annotation != null && !annotation.comment.isNullOrBlank()) {
+        if (jtable != null) {
+            holder.tvCommentText.text = "; → switch (${jtable.entryCount} cases)"
+            holder.tvCommentText.visibility = View.VISIBLE
+            holder.tvCommentText.setTypeface(null, Typeface.BOLD)
+            holder.tvCommentText.setTextColor(android.graphics.Color.parseColor("#00E5FF")) // Sleek Cyan
+        } else if (annotation != null && !annotation.comment.isNullOrBlank()) {
             holder.tvCommentText.text = "; ${annotation.comment}"
             holder.tvCommentText.visibility = View.VISIBLE
             holder.tvCommentText.setTypeface(null, Typeface.ITALIC)
@@ -824,6 +831,60 @@ fun RecyclerView.scrollToAddress(
         }
     }
 }
+
+// --- RECENT FILES ADAPTER ---
+
+class RecentFilesAdapter(
+    private val onItemClick: (RecentFile) -> Unit,
+    private val onRemoveClick: (RecentFile) -> Unit
+) : ListAdapter<RecentFile, RecentFilesAdapter.ViewHolder>(DiffCallback) {
+
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvName: TextView = view.findViewById(R.id.tv_recent_name)
+        val tvMeta: TextView = view.findViewById(R.id.tv_recent_meta)
+        val ivRemove: ImageView = view.findViewById(R.id.iv_recent_remove)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_recent_file, parent, false)
+        return ViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val item = getItem(position)
+        holder.tvName.text = item.displayName
+        
+        val sizeKb = item.fileSize / 1024
+        val sizeStr = if (sizeKb > 1024) {
+            String.format("%.1f MB", sizeKb / 1024.0)
+        } else {
+            "$sizeKb KB"
+        }
+        
+        val timeDiff = System.currentTimeMillis() - item.lastOpened
+        val timeStr = when {
+            timeDiff < 60000 -> "Just now"
+            timeDiff < 3600000 -> "${timeDiff / 60000} mins ago"
+            timeDiff < 86400000 -> "${timeDiff / 3600000} hours ago"
+            else -> java.text.DateFormat.getDateInstance(java.text.DateFormat.SHORT).format(java.util.Date(item.lastOpened))
+        }
+        
+        holder.tvMeta.text = "$sizeStr | ${item.architecture} | $timeStr"
+        
+        holder.itemView.setOnClickListener { onItemClick(item) }
+        holder.ivRemove.setOnClickListener { onRemoveClick(item) }
+    }
+
+    companion object DiffCallback : DiffUtil.ItemCallback<RecentFile>() {
+        override fun areItemsTheSame(oldItem: RecentFile, newItem: RecentFile): Boolean {
+            return oldItem.uri == newItem.uri
+        }
+        override fun areContentsTheSame(oldItem: RecentFile, newItem: RecentFile): Boolean {
+            return oldItem == newItem
+        }
+    }
+}
+
 
 
 

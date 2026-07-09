@@ -239,6 +239,32 @@
                 </LinearLayout>
             </androidx.cardview.widget.CardView>
 
+            <!-- Recent Files Section -->
+            <LinearLayout
+                android:id="@+id/layout_recent_files"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginBottom="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:fontFamily="monospace"
+                    android:text="RECENT BINARIES"
+                    android:textColor="@color/neon_cyan"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rv_recent_files"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:nestedScrollingEnabled="false" />
+            </LinearLayout>
+
             <!-- Persistent live-status bar/chip (updates in background during streaming analysis) -->
             <androidx.cardview.widget.CardView
                 android:id="@+id/card_analysis_status"
